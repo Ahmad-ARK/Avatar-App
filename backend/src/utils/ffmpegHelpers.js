@@ -60,6 +60,38 @@ function summarizeFFmpegError(log) {
   return lines.slice(-2).join(' | ').slice(-300);
 }
 
+let _nvencProbe = null; // cached Promise<boolean>
+
+/**
+ * Detect whether h264_nvenc can actually encode on this machine. The encoder being
+ * compiled into ffmpeg-static doesn't mean the GPU/driver supports it, so we run a tiny
+ * throwaway encode and check the exit code. Cached — runs at most once per process.
+ *
+ * @returns {Promise<boolean>}
+ */
+export function detectNvenc() {
+  if (_nvencProbe) return _nvencProbe;
+  _nvencProbe = new Promise((resolve) => {
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'color=c=black:s=128x128:d=0.1:r=5',
+      '-c:v', 'h264_nvenc', '-f', 'null', '-',
+    ];
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const proc = spawn(ffmpegPath, args);
+      proc.on('close', (code) => done(code === 0));
+      proc.on('error', () => done(false));
+      // Never let a hung probe stall the pipeline.
+      setTimeout(() => { try { proc.kill(); } catch {} done(false); }, 8000);
+    } catch {
+      done(false);
+    }
+  });
+  return _nvencProbe;
+}
+
 /**
  * Probes media file to get duration, width, height using ffprobe.
  *

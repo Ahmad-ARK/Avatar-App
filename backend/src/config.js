@@ -1,9 +1,14 @@
 import fs from 'fs';
+import os from 'os';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Result of runtime GPU (NVENC) detection: null = not yet probed, true/false = probed.
+// Set once per run by the compositor before rendering (see detectNvenc in ffmpegHelpers).
+let _gpuDetected = null;
 
 // Load .env from project root (one level above backend/)
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -79,12 +84,34 @@ const config = {
   },
 
   encoding: {
-    get useGpu() {
-      const val = getVal('useGpu', 'USE_GPU', 'false');
-      return val === 'true' || val === true;
+    // 'on' | 'off' | 'auto'. Default 'auto' → use the GPU when NVENC is actually available,
+    // else fall back to CPU. An explicit true/false from Settings always wins.
+    get gpuMode() {
+      const val = getVal('useGpu', 'USE_GPU', 'auto');
+      if (val === 'true' || val === true) return 'on';
+      if (val === 'false' || val === false) return 'off';
+      return 'auto';
     },
+    get useGpu() {
+      const mode = this.gpuMode;
+      if (mode === 'on') return true;
+      if (mode === 'off') return false;
+      return _gpuDetected === true; // 'auto': only once detection confirms NVENC works
+    },
+    // Called once per run after probing the GPU.
+    setGpuDetected(v) { _gpuDetected = v === true; },
     get codec() { return this.useGpu ? 'h264_nvenc' : 'libx264'; },
     get preset() { return this.useGpu ? 'p4' : 'fast'; },
+    // How many segments to render in parallel. 'auto' scales with CPU cores; GPU encode
+    // sessions are limited on consumer cards, so cap lower when using the GPU.
+    get concurrency() {
+      const raw = getVal('renderConcurrency', 'RENDER_CONCURRENCY', 'auto');
+      const explicit = parseInt(raw, 10);
+      if (Number.isFinite(explicit) && explicit >= 1) return explicit;
+      const cores = (os.cpus() || []).length || 4;
+      const base = Math.max(2, Math.min(4, Math.floor(cores / 2)));
+      return this.useGpu ? Math.min(base, 2) : base;
+    },
   },
 
   planning: {

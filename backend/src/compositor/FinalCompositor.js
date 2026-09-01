@@ -1,9 +1,10 @@
 import path from 'path';
 import fs from 'fs-extra';
 import { BasePipelineStage } from '../pipeline/BasePipelineStage.js';
-import { runFFmpeg } from '../utils/ffmpegHelpers.js';
+import { runFFmpeg, detectNvenc } from '../utils/ffmpegHelpers.js';
 import { SegmentRenderer } from './SegmentRenderer.js';
 import { isUsableFile, quoteFilterPath } from '../utils/ffmpegSafe.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
 import config from '../config.js';
 
 export class FinalCompositor extends BasePipelineStage {
@@ -31,19 +32,31 @@ export class FinalCompositor extends BasePipelineStage {
       console.warn(`[FinalCompositor] Preflight dropped ${droppedAssets} unusable asset(s) → full_avatar`);
     }
 
-    this.emitProgress(0, `Rendering ${segments.length} segments...`);
+    // Resolve GPU encoding once per run when set to 'auto': probe NVENC and pin the result
+    // so every segment (and its fallbacks) uses the same codec — concat needs consistency.
+    if (config.encoding.gpuMode === 'auto') {
+      const nvenc = await detectNvenc();
+      config.encoding.setGpuDetected(nvenc);
+      console.log(`[FinalCompositor] GPU encode ${nvenc ? 'enabled (h264_nvenc)' : 'unavailable → libx264 (CPU)'}`);
+    }
 
-    // 1. Render each segment through a fallback chain so ONE bad segment can never kill the
-    // whole video: styled render → safe avatar slice → blank clip (exact duration). The last
-    // two both preserve the segment's duration, so concat and burned captions stay in sync.
+    const concurrency = config.encoding.concurrency;
+    this.emitProgress(0, `Rendering ${segments.length} segments (${config.encoding.codec}, x${concurrency})...`);
+
+    // 1. Render segments in parallel (bounded) through a per-segment fallback chain, so ONE
+    // bad segment can never kill the whole video: styled → safe avatar slice → blank clip.
+    // Results come back in input order for concat; the fallbacks preserve each segment's
+    // duration so audio and burned captions stay in sync.
     const tally = { ok: 0, safe: 0, blank: 0, skipped: 0 };
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const progress = Math.round((i / segments.length) * 60);
-      this.emitProgress(progress, `Rendering segment ${i + 1}/${segments.length}`);
-
-      const segPath = await this.renderSegmentResilient(seg, videoPath, tempDir, context.nicheConfig, tally);
-      if (segPath) renderedPaths.push(segPath);
+    let completed = 0;
+    const orderedPaths = await mapWithConcurrency(segments, concurrency, async (seg) => {
+      const p = await this.renderSegmentResilient(seg, videoPath, tempDir, context.nicheConfig, tally);
+      completed++;
+      this.emitProgress(Math.round((completed / segments.length) * 60), `Rendered ${completed}/${segments.length} segments`);
+      return p;
+    });
+    for (const p of orderedPaths) {
+      if (p) renderedPaths.push(p);
     }
 
     if (renderedPaths.length === 0) {
