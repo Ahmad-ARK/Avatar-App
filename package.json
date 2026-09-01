@@ -1,0 +1,55 @@
+{
+  "name": "avatar-editor",
+  "version": "1.0.0",
+  "description": "Avatar Video Editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:frontend": "cd frontend && npm install && npm run build",
+    "build:backend": "cd backend && npm install",
+    "build": "npm run build:frontend && npm run build:backend && electron-builder",
+    "dev": "concurrently \"cd backend && npm run dev\" \"cd frontend && npm run dev\""
+  },
+  "build": {
+    "appId": "com.avatareditor.app",
+    "productName": "Avatar Editor",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "backend/**/*",
+      "frontend/dist/**/*",
+      "settings.json",
+      ".env"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "asar": false
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "form-data": "^4.0.0",
+    "fs-extra": "^11.2.0",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.2",
+    "socket.io": "^4.7.5",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "wait-on": "^9.0.10"
+  }
+}

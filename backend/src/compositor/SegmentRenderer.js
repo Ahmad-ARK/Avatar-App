@@ -1,0 +1,198 @@
+import path from 'path';
+import { runFFmpeg } from '../utils/ffmpegHelpers.js';
+import { layouts } from './layouts.js';
+import config from '../config.js';
+
+export class SegmentRenderer {
+  /**
+   * Render a single video segment with:
+   * - Synced audio (fixes lip sync drift)
+   * - Ken Burns/zoom effects on images
+   * - Fade in/out transitions
+   */
+  async render(segment, avatarVideoPath, tempDir, nicheConfig = null) {
+    const segmentPath = path.join(tempDir, `seg_${segment.id}.mp4`);
+    const duration = segment.end_time - segment.start_time;
+    const { width, height, fps } = config.output;
+    const isImage = segment.assetPath && 
+      (segment.assetPath.endsWith('.jpg') || segment.assetPath.endsWith('.png') || segment.assetPath.endsWith('.jpeg'));
+    const hasAsset = segment.assetPath && segment.layout !== 'full_avatar';
+
+    const args = [
+      '-ss', segment.start_time.toString(),
+      '-t', duration.toString(),
+      '-i', avatarVideoPath,
+    ];
+
+    let filterParts = [];
+
+    if (!hasAsset) {
+      // === FULL AVATAR (with subtle zoom motion) ===
+      const motion = segment.motion || 'slow_zoom_in';
+      const zoomFilter = this.getAvatarMotion(motion, duration, fps, width, height);
+      filterParts.push(`[0:v]${zoomFilter}[outv]`);
+    } else {
+      // === ASSET-BASED LAYOUTS ===
+      if (isImage) {
+        // Add image with Ken Burns effect (DO NOT use -loop 1, zoompan generates the frames)
+        args.push('-i', segment.assetPath);
+        const kbEffect = this.getKenBurnsEffect(segment.motion, duration, fps, width, height);
+        // Supersampling Anti-Aliasing (SSAA) Fix:
+        // We upscale the input to 3x (5760x3240) BEFORE zoompan.
+        // We set zoompan's output 's' to 1x (1920x1080).
+        // This forces zoompan to DOWNSCALE the image on every frame. Downscaling perfectly masks the 
+        // 1-pixel integer rounding errors of zoompan, giving a buttery smooth sub-pixel CSS-like transform.
+        const preW = width * 3;
+        const preH = height * 3;
+        filterParts.push(`[1:v]scale=${preW}:${preH}:force_original_aspect_ratio=increase,crop=${preW}:${preH},${kbEffect}[asset]`);
+      } else {
+        // Video asset
+        args.push('-t', duration.toString(), '-i', segment.assetPath);
+        filterParts.push(`[1:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}[asset]`);
+      }
+
+      // Apply the layout using [0:v] and [asset] 
+      const layoutFilter = this.getLayoutFilter(segment.layout, width, height);
+      filterParts.push(layoutFilter);
+    }
+
+    let finalPad = '[outv]';
+
+    // Apply text overlay if the LLM generated one
+    if (segment.text_overlay) {
+      // Escape text for drawtext. Text is wrapped in single quotes below, and FFmpeg's
+      // filtergraph parser has no backslash-escape for a quote char inside '...' — the only
+      // way to embed a literal ' is to close the quote, insert \', then reopen it.
+      const text = segment.text_overlay.replace(/'/g, "'\\''");
+      
+      // Get colors from nicheConfig or fallback to defaults
+      let bgColor = 'black@0.6';
+      let fontColor = 'white';
+      if (nicheConfig && nicheConfig.color_palette) {
+        // Ensure hex starts without # and is exactly 6 chars, then add alpha
+        const primaryColor = nicheConfig.color_palette.primary.replace('#', '').substring(0, 6);
+        bgColor = `${primaryColor}@0.8`;
+        fontColor = nicheConfig.color_palette.accent || 'white';
+      }
+
+      // We use Arial Bold on Windows to avoid fontconfig errors
+      const fontPath = 'C\\:/Windows/Fonts/arialbd.ttf';
+      const drawtextFilter = `drawtext=text='${text}':fontfile='${fontPath}':fontcolor=${fontColor}:fontsize=110:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=${bgColor}:boxborderw=25:shadowcolor=black@0.5:shadowx=5:shadowy=5`;
+      
+      filterParts.push(`${finalPad}${drawtextFilter}[withtext]`);
+      finalPad = '[withtext]';
+    }
+
+    // Output formatting (hard cuts are preferred)
+    filterParts.push(`${finalPad}fps=${fps},format=yuv420p[final]`);
+
+    const filterComplex = filterParts.join(';');
+
+    args.push(
+      '-filter_complex', filterComplex,
+      '-map', '[final]',
+      '-map', '0:a',  // Keep audio synced with video
+      '-c:v', config.encoding.codec,
+      '-preset', config.encoding.preset,
+      '-video_track_timescale', '90000', // STRICT TIMELINE FIX: Prevents 1-hour duration bug during concat
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-y',
+      segmentPath
+    );
+
+    await runFFmpeg(args);
+    return segmentPath;
+  }
+
+  /**
+   * Ken Burns effect variations for still images.
+   */
+  getKenBurnsEffect(motion, duration, fps, width, height) {
+    const totalFrames = Math.ceil(duration * fps);
+    const s = `${width}x${height}`;
+
+    // Calculate exact zoom increments so it never hits the limit early and stops
+    // And use 'on' (frame counter) to prevent floating point accumulation wobble!
+    // We calculate exactly how much to zoom per frame based on the total frames!
+    const zIn = (0.3 / totalFrames).toFixed(6); // Zoom from 1.0 to 1.3 precisely over the duration
+    const zOut = (0.3 / totalFrames).toFixed(6); // Zoom from 1.3 to 1.0
+    
+    switch (motion) {
+      case 'ken_burns':
+      case 'slow_zoom_in':
+        // Perfect deterministic zoom into center
+        return `zoompan=z='1.0+(on*${zIn})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${s}:fps=${fps}`;
+      case 'slow_zoom_out':
+        // Perfect deterministic zoom out from center
+        return `zoompan=z='1.3-(on*${zOut})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${s}:fps=${fps}`;
+      case 'subtle_drift':
+        // Pan perfectly from left to right at constant zoom 1.15 over the exact duration
+        return `zoompan=z='1.15':d=${totalFrames}:x='(iw-(iw/zoom))*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':s=${s}:fps=${fps}`;
+      default:
+        // Default: gentle zoom in
+        const zDef = (0.2 / totalFrames).toFixed(6);
+        return `zoompan=z='1.0+(on*${zDef})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${s}:fps=${fps}`;
+    }
+  }
+
+  /**
+   * Subtle motion for full_avatar segments (applied directly to avatar video).
+   */
+  getAvatarMotion(motion, duration, fps, width, height) {
+    // For video inputs, we use scale + crop with slight zoom to simulate motion
+    // True zoompan on video is expensive; use a simpler approach
+    const padW = Math.floor(width * 1.05);
+    const padH = Math.floor(height * 1.05);
+
+    switch (motion) {
+      case 'slow_zoom_in':
+        return `scale=${padW}:${padH}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=PTS-STARTPTS`;
+      case 'slow_zoom_out':
+        return `scale=${padW}:${padH}:force_original_aspect_ratio=increase,crop=${width}:${height}:exact=1,setpts=PTS-STARTPTS`;
+      default:
+        return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=PTS-STARTPTS`;
+    }
+  }
+
+  /**
+   * Generate the layout filter using pre-processed [asset] and [0:v].
+   */
+  getLayoutFilter(layout, width, height) {
+    const halfW = Math.floor(width / 2);
+    const pipW = Math.floor(width * 0.3);
+    const pipH = Math.floor(height * 0.3);
+    const pad = 40;
+
+    switch (layout) {
+      case 'visual_only':
+        return `[asset]copy[outv]`;
+
+      case 'split_screen':
+        return [
+          `[0:v]scale=${halfW}:${height}:force_original_aspect_ratio=increase,crop=${halfW}:${height}[left]`,
+          `[asset]scale=${halfW}:${height}:force_original_aspect_ratio=increase,crop=${halfW}:${height}[right]`,
+          `[left][right]hstack=inputs=2:shortest=1[outv]`
+        ].join(';');
+
+      case 'pip_bottom_right':
+        return [
+          `[asset]copy[bg]`,
+          `[0:v]scale=${pipW}:${pipH}:force_original_aspect_ratio=decrease,pad=${pipW}:${pipH}:(ow-iw)/2:(oh-ih)/2[pip]`,
+          `[bg][pip]overlay=x=${width - pipW - pad}:y=${height - pipH - pad}:shortest=1[outv]`
+        ].join(';');
+
+      case 'pip_bottom_left':
+        return [
+          `[asset]copy[bg]`,
+          `[0:v]scale=${pipW}:${pipH}:force_original_aspect_ratio=decrease,pad=${pipW}:${pipH}:(ow-iw)/2:(oh-ih)/2[pip]`,
+          `[bg][pip]overlay=x=${pad}:y=${height - pipH - pad}:shortest=1[outv]`
+        ].join(';');
+
+      default:
+        // Fallback: if layout is unrecognized but we have an asset, use visual_only
+        // MUST consume [asset] to prevent FFmpeg unconnected output error
+        return `[asset]copy[outv]`;
+    }
+  }
+}
