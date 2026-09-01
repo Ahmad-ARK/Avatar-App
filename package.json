@@ -20,8 +20,9 @@
       "main.js",
       "backend/**/*",
       "frontend/dist/**/*",
-      "settings.json",
-      ".env"
+      "!**/.env",
+      "!**/.env.*",
+      "!**/settings.json"
     ],
     "win": {
       "target": "nsis"
