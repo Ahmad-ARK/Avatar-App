@@ -2,6 +2,12 @@ import path from 'path';
 import { runFFmpeg } from '../utils/ffmpegHelpers.js';
 import { layouts } from './layouts.js';
 import config from '../config.js';
+import {
+  escapeDrawtextText,
+  quoteFilterPath,
+  sanitizeHexColor,
+  resolveFontFile,
+} from '../utils/ffmpegSafe.js';
 
 export class SegmentRenderer {
   /**
@@ -58,27 +64,23 @@ export class SegmentRenderer {
 
     let finalPad = '[outv]';
 
-    // Apply text overlay if the LLM generated one
-    if (segment.text_overlay) {
-      // Escape text for drawtext. Text is wrapped in single quotes below, and FFmpeg's
-      // filtergraph parser has no backslash-escape for a quote char inside '...' — the only
-      // way to embed a literal ' is to close the quote, insert \', then reopen it.
-      const text = segment.text_overlay.replace(/'/g, "'\\''");
-      
-      // Get colors from nicheConfig or fallback to defaults
+    // Apply text overlay if the LLM generated one. Every dynamic value (text, colors, font
+    // path) is sanitized through ffmpegSafe — a malformed one used to crash the whole render.
+    // If no usable font is found, we skip the overlay rather than fail the segment.
+    const fontFile = resolveFontFile(config.paths.fonts);
+    if (segment.text_overlay && fontFile) {
+      const text = escapeDrawtextText(segment.text_overlay);
+
+      // Colors from nicheConfig, validated (bad hex falls back instead of breaking the filter)
       let bgColor = 'black@0.6';
       let fontColor = 'white';
       if (nicheConfig && nicheConfig.color_palette) {
-        // Ensure hex starts without # and is exactly 6 chars, then add alpha
-        const primaryColor = nicheConfig.color_palette.primary.replace('#', '').substring(0, 6);
-        bgColor = `${primaryColor}@0.8`;
-        fontColor = nicheConfig.color_palette.accent || 'white';
+        bgColor = sanitizeHexColor(nicheConfig.color_palette.primary, 'black', 0.8);
+        fontColor = sanitizeHexColor(nicheConfig.color_palette.accent, 'white');
       }
 
-      // We use Arial Bold on Windows to avoid fontconfig errors
-      const fontPath = 'C\\:/Windows/Fonts/arialbd.ttf';
-      const drawtextFilter = `drawtext=text='${text}':fontfile='${fontPath}':fontcolor=${fontColor}:fontsize=110:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=${bgColor}:boxborderw=25:shadowcolor=black@0.5:shadowx=5:shadowy=5`;
-      
+      const drawtextFilter = `drawtext=text='${text}':fontfile=${quoteFilterPath(fontFile)}:fontcolor=${fontColor}:fontsize=110:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=${bgColor}:boxborderw=25:shadowcolor=black@0.5:shadowx=5:shadowy=5`;
+
       filterParts.push(`${finalPad}${drawtextFilter}[withtext]`);
       finalPad = '[withtext]';
     }
@@ -92,16 +94,74 @@ export class SegmentRenderer {
       '-filter_complex', filterComplex,
       '-map', '[final]',
       '-map', '0:a',  // Keep audio synced with video
+      ...this._encodeTail(segmentPath)
+    );
+
+    await runFFmpeg(args, `segment ${segment.id} (${segment.layout})`);
+    return segmentPath;
+  }
+
+  /**
+   * Shared output-encoding args so every render path (full, safe, blank) produces
+   * concat-compatible files with identical codec, timescale, and audio settings.
+   */
+  _encodeTail(outPath) {
+    return [
       '-c:v', config.encoding.codec,
       '-preset', config.encoding.preset,
-      '-video_track_timescale', '90000', // STRICT TIMELINE FIX: Prevents 1-hour duration bug during concat
+      '-video_track_timescale', '90000', // STRICT TIMELINE FIX: prevents the 1-hour concat duration bug
       '-c:a', 'aac',
       '-b:a', '128k',
       '-y',
-      segmentPath
-    );
+      outPath,
+    ];
+  }
 
-    await runFFmpeg(args);
+  /**
+   * FALLBACK 1 — the simplest render that can't really fail: the avatar video slice,
+   * scaled to frame, with its own audio. No asset, no overlay, no fancy filters.
+   * Preserves the segment's duration and voice, so the timeline and captions stay in sync.
+   */
+  async renderSafe(segment, avatarVideoPath, tempDir) {
+    const segmentPath = path.join(tempDir, `seg_${segment.id}_safe.mp4`);
+    const duration = segment.end_time - segment.start_time;
+    const { width, height, fps } = config.output;
+
+    const args = [
+      '-ss', segment.start_time.toString(),
+      '-t', duration.toString(),
+      '-i', avatarVideoPath,
+      '-filter_complex',
+      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},format=yuv420p,setpts=PTS-STARTPTS[final]`,
+      '-map', '[final]',
+      '-map', '0:a',
+      ...this._encodeTail(segmentPath),
+    ];
+
+    await runFFmpeg(args, `segment ${segment.id} (safe fallback)`);
+    return segmentPath;
+  }
+
+  /**
+   * FALLBACK 2 — last resort that depends on nothing: a black clip of the exact duration
+   * with silent audio. Only reached if even the avatar slice fails. Guarantees the timeline
+   * length is preserved so nothing downstream (concat, burned captions) desyncs.
+   */
+  async renderBlank(segment, tempDir) {
+    const segmentPath = path.join(tempDir, `seg_${segment.id}_blank.mp4`);
+    const duration = Math.max(0.1, segment.end_time - segment.start_time);
+    const { width, height, fps } = config.output;
+
+    const args = [
+      '-f', 'lavfi', '-i', `color=c=black:s=${width}x${height}:r=${fps}:d=${duration}`,
+      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+      '-t', duration.toString(),
+      '-map', '0:v', '-map', '1:a',
+      '-pix_fmt', 'yuv420p',
+      ...this._encodeTail(segmentPath),
+    ];
+
+    await runFFmpeg(args, `segment ${segment.id} (blank fallback)`);
     return segmentPath;
   }
 
