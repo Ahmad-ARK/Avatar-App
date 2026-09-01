@@ -127,6 +127,22 @@ const config = {
     },
   },
 
+  // Output styling: background music, color grade (captions are always on).
+  style: {
+    get enableMusic() {
+      const val = getVal('enableMusic', 'ENABLE_MUSIC', 'true');
+      return !(val === 'false' || val === false);
+    },
+    get musicVolume() {
+      const v = parseFloat(getVal('musicVolume', 'MUSIC_VOLUME', '0.18'));
+      return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.18;
+    },
+    get enableColorGrade() {
+      const val = getVal('enableColorGrade', 'ENABLE_COLOR_GRADE', 'true');
+      return !(val === 'false' || val === false);
+    },
+  },
+
   paths: {
     root: process.env.APP_ROOT || path.resolve(__dirname, '../..'),
     uploads: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'uploads'),
@@ -134,6 +150,10 @@ const config = {
     temp: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'temp'),
     cache: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'cache'),
     fonts: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'backend', 'fonts'),
+    // Bundled music ships with the app (source-relative so it resolves in dev AND packaged);
+    // userMusic is a writable folder recipients can drop their own tracks into.
+    music: path.resolve(__dirname, '..', 'assets', 'music'),
+    userMusic: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'music'),
   },
 
   // Update in-memory settings and persist to disk

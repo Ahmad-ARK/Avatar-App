@@ -5,6 +5,8 @@ import { runFFmpeg, detectNvenc } from '../utils/ffmpegHelpers.js';
 import { SegmentRenderer } from './SegmentRenderer.js';
 import { isUsableFile, quoteFilterPath } from '../utils/ffmpegSafe.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
+import { getColorGrade } from '../utils/colorGrade.js';
+import { pickMusicTrack, buildMusicMixFilter } from '../utils/audioMix.js';
 import config from '../config.js';
 
 export class FinalCompositor extends BasePipelineStage {
@@ -87,35 +89,100 @@ export class FinalCompositor extends BasePipelineStage {
     ];
     await runFFmpeg(concatArgs, 'concatenating segments');
 
-    // 4. Burn subtitles onto the concatenated video. Captions are an enhancement — if the
-    // burn fails (e.g. a font issue), ship the concatenated video WITHOUT captions rather
-    // than losing a fully-rendered video at the final step.
-    this.emitProgress(80, 'Burning subtitles...');
+    // 4. Finalize: color grade + karaoke captions on video, ducked music bed on audio — all
+    // in ONE re-encode (keeps it fast). Degrades gracefully: if the fancy pass fails, retry
+    // with fewer features so a finished video is never lost at the last step.
+    this.emitProgress(80, 'Finalizing (grade, captions, music)...');
     const finalOutputPath = path.join(config.paths.output, `${jobId}.mp4`);
 
-    const subtitleArgs = [
-      '-i', concatOutputPath,
-      '-vf', `ass=${quoteFilterPath(captionsPath)}`,
-      '-c:v', config.encoding.codec,
-      '-preset', config.encoding.preset,
-      '-c:a', 'copy', // Audio already good from concat
-      '-shortest',
-      '-y',
-      finalOutputPath
-    ];
-
-    try {
-      await runFFmpeg(subtitleArgs, 'burning captions');
-      context.finalVideoPath = finalOutputPath;
-    } catch (err) {
-      console.warn(`[FinalCompositor] Caption burn failed (${err.message}); shipping video without captions.`);
-      await fs.copy(concatOutputPath, finalOutputPath, { overwrite: true });
-      context.finalVideoPath = finalOutputPath;
-      context.captionsSkipped = true;
+    const gradeFilter = config.style.enableColorGrade ? getColorGrade(context.nicheConfig) : '';
+    let musicPath = null;
+    if (config.style.enableMusic) {
+      musicPath = pickMusicTrack([config.paths.music, config.paths.userMusic]);
+      if (musicPath) console.log(`[FinalCompositor] Music bed: ${path.basename(musicPath)}`);
     }
 
+    const applied = await this.finalize({
+      concatPath: concatOutputPath,
+      outPath: finalOutputPath,
+      captionsPath,
+      gradeFilter,
+      musicPath,
+    });
+
+    context.finalVideoPath = finalOutputPath;
+    context.captionsApplied = applied.captions;
+    context.musicApplied = applied.music;
+    context.colorGradeApplied = applied.grade;
     this.emitProgress(100, 'Video rendering complete');
     return context;
+  }
+
+  /**
+   * Assemble the final video, trying the richest feature set first and falling back on
+   * failure. Returns which features actually made it in.
+   */
+  async finalize({ concatPath, outPath, captionsPath, gradeFilter, musicPath }) {
+    const attempts = [];
+    if (musicPath) attempts.push({ grade: gradeFilter, captions: captionsPath, music: musicPath });
+    attempts.push({ grade: gradeFilter, captions: captionsPath, music: null });
+    if (gradeFilter) attempts.push({ grade: '', captions: captionsPath, music: null });
+    attempts.push({ passthrough: true }); // last resort: ship the concat as-is
+
+    for (const a of attempts) {
+      try {
+        if (a.passthrough) {
+          await fs.copy(concatPath, outPath, { overwrite: true });
+          return { grade: false, captions: false, music: false };
+        }
+        await runFFmpeg(
+          this.buildFinalizeArgs({ concatPath, outPath, ...a }),
+          `finalize (grade=${!!a.grade} captions=${!!a.captions} music=${!!a.music})`
+        );
+        return { grade: !!a.grade, captions: !!a.captions, music: !!a.music };
+      } catch (err) {
+        console.warn(`[FinalCompositor] finalize attempt failed: ${err.message}`);
+      }
+    }
+    return { grade: false, captions: false, music: false };
+  }
+
+  /** Build the single-pass finalize ffmpeg args for a given feature set. */
+  buildFinalizeArgs({ concatPath, outPath, captionsPath, gradeFilter, musicPath }) {
+    const inputs = ['-i', concatPath];
+
+    // Video chain: [grade,] captions. Always non-empty here (captions present on every attempt
+    // that isn't passthrough); use `null` as a safety if somehow both are absent.
+    const vparts = [];
+    if (gradeFilter) vparts.push(gradeFilter);
+    if (captionsPath) vparts.push(`ass=${quoteFilterPath(captionsPath)}`);
+    const videoChain = vparts.length ? vparts.join(',') : 'null';
+    const fc = [`[0:v]${videoChain}[vout]`];
+
+    const args = [];
+    let audioMap = '0:a';
+    let audioCodec = ['-c:a', 'copy'];
+    if (musicPath) {
+      inputs.push('-stream_loop', '-1', '-i', musicPath); // loop music to cover the whole video
+      const { filter, outLabel } = buildMusicMixFilter({ musicInput: 1, volume: config.style.musicVolume });
+      fc.push(filter);
+      audioMap = outLabel;
+      audioCodec = ['-c:a', 'aac', '-b:a', '192k'];
+    }
+
+    args.push(
+      ...inputs,
+      '-filter_complex', fc.join(';'),
+      '-map', '[vout]',
+      '-map', audioMap,
+      '-c:v', config.encoding.codec,
+      '-preset', config.encoding.preset,
+      ...audioCodec,
+      '-shortest',
+      '-y',
+      outPath,
+    );
+    return args;
   }
 
   /**
