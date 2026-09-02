@@ -141,6 +141,14 @@ const config = {
       const val = getVal('enableColorGrade', 'ENABLE_COLOR_GRADE', 'true');
       return !(val === 'false' || val === false);
     },
+    get enableTransitions() {
+      const val = getVal('enableTransitions', 'ENABLE_TRANSITIONS', 'true');
+      return !(val === 'false' || val === false);
+    },
+    get transitionDuration() {
+      const v = parseFloat(getVal('transitionDuration', 'TRANSITION_DURATION', '0.3'));
+      return Number.isFinite(v) ? Math.min(1, Math.max(0.1, v)) : 0.3;
+    },
   },
 
   paths: {

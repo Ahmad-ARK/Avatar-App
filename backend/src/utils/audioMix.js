@@ -40,15 +40,17 @@ export function pickMusicTrack(dirs, seed = Math.random()) {
  * @param {object} opts
  * @param {number} opts.musicInput - the ffmpeg input index of the music (e.g. 1)
  * @param {number} [opts.volume=0.18] - music bed level (0..1) before ducking
+ * @param {string} [opts.voiceLabel='[0:a]'] - the voice stream to anchor to (concat: [0:a];
+ *        transition path: the acrossfade output label)
  * @returns {{ filter: string, outLabel: string }}
  */
-export function buildMusicMixFilter({ musicInput, volume = 0.18 }) {
+export function buildMusicMixFilter({ musicInput, volume = 0.18, voiceLabel = '[0:a]' }) {
   const v = Math.min(1, Math.max(0, volume));
   // Split the voice: one copy is mixed in, the other drives the ducking sidechain.
   // Music is leveled, then compressed by the voice, then mixed with the voice at unity
   // (normalize=0 keeps the voice from being halved by amix).
   const filter = [
-    `[0:a]asplit=2[voice_mix][voice_sc]`,
+    `${voiceLabel}asplit=2[voice_mix][voice_sc]`,
     `[${musicInput}:a]volume=${v}[music_lvl]`,
     `[music_lvl][voice_sc]sidechaincompress=threshold=0.02:ratio=8:attack=15:release=350[music_duck]`,
     `[voice_mix][music_duck]amix=inputs=2:duration=first:normalize=0[aout]`,

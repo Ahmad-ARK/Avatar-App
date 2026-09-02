@@ -149,6 +149,18 @@ const SettingsPage = ({ backendUrl }) => {
                 <span className="slider"></span>
               </label>
             </div>
+            <div className="flex-between" style={{ marginTop: '1.25rem' }}>
+              <div>
+                <span className="form-label mb-0">Scene transitions</span>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)', display: 'block', marginTop: '0.25rem', lineHeight: '1.4' }}>
+                  Short crossfades between scenes instead of hard cuts. Adds a little render time; turn off for the fastest renders.
+                </span>
+              </div>
+              <label className="toggle">
+                <input type="checkbox" name="enableTransitions" checked={formData.enableTransitions !== false && formData.enableTransitions !== 'false'} onChange={(e) => setFormData(prev => ({ ...prev, enableTransitions: e.target.checked }))} />
+                <span className="slider"></span>
+              </label>
+            </div>
           </section>
 
           <div className="grid-2 gap-4">

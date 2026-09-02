@@ -7,6 +7,8 @@ import { isUsableFile, quoteFilterPath } from '../utils/ffmpegSafe.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getColorGrade } from '../utils/colorGrade.js';
 import { pickMusicTrack, buildMusicMixFilter } from '../utils/audioMix.js';
+import { canTransition, buildXfadeChain, buildAcrossfadeChain, retimeWords } from './transitions.js';
+import { CaptionEngine } from '../pipeline/CaptionEngine.js';
 import config from '../config.js';
 
 export class FinalCompositor extends BasePipelineStage {
@@ -57,44 +59,27 @@ export class FinalCompositor extends BasePipelineStage {
       this.emitProgress(Math.round((completed / segments.length) * 60), `Rendered ${completed}/${segments.length} segments`);
       return p;
     });
-    for (const p of orderedPaths) {
-      if (p) renderedPaths.push(p);
-    }
+    // Keep each rendered file with its intended duration (needed for crossfade offsets).
+    const rendered = [];
+    orderedPaths.forEach((p, i) => {
+      if (p) {
+        renderedPaths.push(p);
+        rendered.push({ path: p, duration: Math.max(0.1, segments[i].end_time - segments[i].start_time) });
+      }
+    });
 
     if (renderedPaths.length === 0) {
       throw new Error('Every segment failed to render — check the avatar video and FFmpeg setup.');
     }
+    const hadDrops = rendered.length !== segments.length;
     const degraded = tally.safe + tally.blank + tally.skipped;
     if (degraded > 0) {
       console.warn(`[FinalCompositor] Render summary: ${tally.ok} ok, ${tally.safe} safe-fallback, ${tally.blank} blank, ${tally.skipped} skipped`);
       this.emitProgress(60, `Rendered ${tally.ok}/${segments.length} cleanly (${degraded} recovered)`);
     }
 
-    this.emitProgress(60, 'Concatenating segments...');
-
-    // 2. Concat list
-    const concatListPath = path.join(tempDir, 'concat.txt');
-    const concatContent = renderedPaths.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
-    await fs.writeFile(concatListPath, concatContent);
-
-    // 3. Concat without re-encoding (segments already have correct codec + audio)
-    const concatOutputPath = path.join(tempDir, 'concat_output.mp4');
-    const concatArgs = [
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', concatListPath,
-      '-c', 'copy', // No re-encode — fast!
-      '-y',
-      concatOutputPath
-    ];
-    await runFFmpeg(concatArgs, 'concatenating segments');
-
-    // 4. Finalize: color grade + karaoke captions on video, ducked music bed on audio — all
-    // in ONE re-encode (keeps it fast). Degrades gracefully: if the fancy pass fails, retry
-    // with fewer features so a finished video is never lost at the last step.
-    this.emitProgress(80, 'Finalizing (grade, captions, music)...');
+    // Shared finalize inputs
     const finalOutputPath = path.join(config.paths.output, `${jobId}.mp4`);
-
     const gradeFilter = config.style.enableColorGrade ? getColorGrade(context.nicheConfig) : '';
     let musicPath = null;
     if (config.style.enableMusic) {
@@ -102,20 +87,136 @@ export class FinalCompositor extends BasePipelineStage {
       if (musicPath) console.log(`[FinalCompositor] Music bed: ${path.basename(musicPath)}`);
     }
 
-    const applied = await this.finalize({
-      concatPath: concatOutputPath,
-      outPath: finalOutputPath,
-      captionsPath,
-      gradeFilter,
-      musicPath,
-    });
+    // 2. TRANSITIONS PATH (preferred): crossfade the segments and burn everything in one pass.
+    // Only when it's safe (no dropped segments, every clip longer than the overlap). Captions
+    // are re-timed to the shortened timeline. Any failure falls back to hard cuts below.
+    const D = config.style.transitionDuration;
+    const durations = rendered.map(r => r.duration);
+    let applied = null;
+    if (config.style.enableTransitions && !hadDrops && canTransition(durations, D)) {
+      this.emitProgress(70, 'Finalizing (transitions, grade, captions, music)...');
+      try {
+        const retimedCaptions = this.writeRetimedCaptions(context, D, tempDir);
+        applied = await this.finalizeWithTransitions({
+          segmentFiles: rendered.map(r => r.path),
+          durations, transitionD: D,
+          outPath: finalOutputPath,
+          captionsPath: retimedCaptions,
+          gradeFilter, musicPath,
+        });
+      } catch (err) {
+        console.warn(`[FinalCompositor] Transition assembly failed (${err.message}); falling back to hard cuts.`);
+        applied = null;
+      }
+    }
+
+    // 3. FALLBACK: hard-cut concat (fast, -c copy) + the proven finalize ladder.
+    if (!applied) {
+      this.emitProgress(75, 'Concatenating segments...');
+      const concatListPath = path.join(tempDir, 'concat.txt');
+      const concatContent = renderedPaths.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
+      await fs.writeFile(concatListPath, concatContent);
+      const concatOutputPath = path.join(tempDir, 'concat_output.mp4');
+      await runFFmpeg([
+        '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', '-y', concatOutputPath,
+      ], 'concatenating segments');
+
+      this.emitProgress(80, 'Finalizing (grade, captions, music)...');
+      applied = await this.finalize({
+        concatPath: concatOutputPath,
+        outPath: finalOutputPath,
+        captionsPath,
+        gradeFilter,
+        musicPath,
+      });
+    }
 
     context.finalVideoPath = finalOutputPath;
     context.captionsApplied = applied.captions;
     context.musicApplied = applied.music;
     context.colorGradeApplied = applied.grade;
+    context.transitionsApplied = !!applied.transitions;
     this.emitProgress(100, 'Video rendering complete');
     return context;
+  }
+
+  /**
+   * Regenerate the caption file with word times shifted onto the crossfaded (shorter)
+   * timeline, so captions stay in sync with the also-crossfaded voice.
+   */
+  writeRetimedCaptions(context, D, tempDir) {
+    const words = context.transcript?.words || [];
+    const segments = context.scenePlan.segments;
+    const retimed = retimeWords(words, segments, D);
+    const ass = new CaptionEngine().buildASS(retimed, context.nicheConfig);
+    const outPath = path.join(tempDir, 'captions_retimed.ass');
+    fs.writeFileSync(outPath, ass, 'utf-8');
+    return outPath;
+  }
+
+  /**
+   * Single-pass assembly with crossfades: xfade video + acrossfade audio, then color grade +
+   * captions on the video and the ducked music bed on the audio. Tries with music first, then
+   * without, so a weird music track can't sink the transition path. Throws if it can't produce
+   * a video at all (caller then falls back to hard cuts).
+   */
+  async finalizeWithTransitions({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath }) {
+    const attempts = musicPath ? [musicPath, null] : [null];
+    let lastErr;
+    for (const music of attempts) {
+      try {
+        await runFFmpeg(
+          this.buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath: music }),
+          `transition finalize (music=${!!music})`
+        );
+        return { grade: !!gradeFilter, captions: !!captionsPath, music: !!music, transitions: true };
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[FinalCompositor] transition finalize (music=${!!music}) failed: ${err.message}`);
+      }
+    }
+    throw lastErr || new Error('transition finalize failed');
+  }
+
+  /** Build the combined xfade + grade + captions + music single-pass args. */
+  buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath }) {
+    const n = segmentFiles.length;
+    const inputs = [];
+    for (const f of segmentFiles) inputs.push('-i', f);
+
+    const { filter: vChain, outLabel: vAcc } = buildXfadeChain(n, durations, transitionD);
+    const { filter: aChain, outLabel: aAcc } = buildAcrossfadeChain(n, transitionD);
+
+    const fc = [];
+    if (vChain) fc.push(vChain);
+    const vparts = [];
+    if (gradeFilter) vparts.push(gradeFilter);
+    if (captionsPath) vparts.push(`ass=${quoteFilterPath(captionsPath)}`);
+    fc.push(`${vAcc}${vparts.length ? vparts.join(',') : 'null'}[vout]`);
+
+    if (aChain) fc.push(aChain);
+
+    let audioMap = aAcc;
+    let audioCodec = ['-c:a', 'aac', '-b:a', '192k'];
+    if (musicPath) {
+      inputs.push('-stream_loop', '-1', '-i', musicPath);
+      const { filter, outLabel } = buildMusicMixFilter({ musicInput: n, volume: config.style.musicVolume, voiceLabel: aAcc });
+      fc.push(filter);
+      audioMap = outLabel;
+    }
+
+    return [
+      ...inputs,
+      '-filter_complex', fc.join(';'),
+      '-map', '[vout]',
+      '-map', audioMap,
+      '-c:v', config.encoding.codec,
+      '-preset', config.encoding.preset,
+      ...audioCodec,
+      '-shortest',
+      '-y',
+      outPath,
+    ];
   }
 
   /**
