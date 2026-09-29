@@ -9,16 +9,37 @@ import ProgressTracker from './components/ProgressTracker';
 import SettingsPanel from './components/SettingsPanel';
 import VideoResult from './components/VideoResult';
 import SettingsPage from './components/SettingsPage';
+import AssetLibrary from './components/AssetLibrary';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = window.location.port === '5173' ? 'http://localhost:3001' : window.location.origin;
 const socket = io(BACKEND_URL);
+
+class ContentErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('Page rendering failed', error, info); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <div className="content-wrapper"><div className="glass-panel">
+      <h2 className="page-title">This page could not be displayed</h2>
+      <p className="page-subtitle">{this.state.error.message || 'Unexpected interface error'}</p>
+      <button className="btn btn-primary" onClick={this.props.onBack}>Return to Video Generator</button>
+    </div></div>;
+  }
+}
 
 function App() {
   const [activeTab, setActiveTab] = useState('generator');
   const [jobState, setJobState] = useState(null); 
   const [settings, setSettings] = useState({
-    useAiImages: false,
-    verifyAssets: true,
+    schemaVersion: 2,
+    avatar: { mode: 'auto', appearanceCount: 5, secondsPerAppearance: 5, placement: 'topic_aware', layout: 'full_avatar', minimumGapSeconds: 1, manualStartSeconds: [] },
+    sources: { projectAssets: true, defaultLibrary: true, pexels: true, pixabay: true, wikimedia: true, duckduckgo: true, serper: false, webVideoDownload: true, aiImages: false },
+    assetTypes: { images: true, videos: true }, projectAssetIds: [], excludedAssetIds: [], libraryCollectionIds: ['default'],
+    transcription: { provider: 'auto', model: 'large-v3' }, verification: { provider: 'auto', enabled: true },
+    generation: { provider: 'modal_qwen', maxImagesPerVideo: 12, stylePreset: 'neutral' }, missingAssetPolicy: 'neutral_card',
+    style: { enableMusic: true, enableSfx: true, sfxVolume: 0.28, maxSfxPerMinute: 6, enableColorGrade: true, enableTransitions: true, musicVolume: 0.18, transitionDuration: 0.3 },
+    output: { resolution: '1920x1080', fps: 30 }, performance: { useGpu: 'auto' }
   });
 
   useEffect(() => {
@@ -100,6 +121,7 @@ function App() {
 
       {/* MAIN CONTENT AREA */}
       <main className="main-content">
+        <ContentErrorBoundary key={activeTab} onBack={() => setActiveTab('generator')}>
         <AnimatePresence mode="wait">
           {activeTab === 'settings' ? (
             <SettingsPage key="settings" backendUrl={BACKEND_URL} />
@@ -121,6 +143,7 @@ function App() {
                     <UploadZone onUpload={handleUpload} />
                   </div>
                   <SettingsPanel settings={settings} setSettings={setSettings} />
+                  <AssetLibrary backendUrl={BACKEND_URL} settings={settings} setSettings={setSettings} />
                 </div>
               )}
 
@@ -152,6 +175,7 @@ function App() {
             </motion.div>
           )}
         </AnimatePresence>
+        </ContentErrorBoundary>
       </main>
 
     </div>

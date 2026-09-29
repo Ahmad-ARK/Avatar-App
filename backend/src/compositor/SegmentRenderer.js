@@ -16,10 +16,10 @@ export class SegmentRenderer {
    * - Ken Burns/zoom effects on images
    * - Fade in/out transitions
    */
-  async render(segment, avatarVideoPath, tempDir, nicheConfig = null) {
+  async render(segment, avatarVideoPath, tempDir, nicheConfig = null, renderOptions = {}) {
     const segmentPath = path.join(tempDir, `seg_${segment.id}.mp4`);
     const duration = segment.end_time - segment.start_time;
-    const { width, height, fps } = config.output;
+    const { width, height, fps } = this.output(renderOptions);
     const isImage = segment.assetPath && 
       (segment.assetPath.endsWith('.jpg') || segment.assetPath.endsWith('.png') || segment.assetPath.endsWith('.jpeg'));
     const hasAsset = segment.assetPath && segment.layout !== 'full_avatar';
@@ -32,7 +32,9 @@ export class SegmentRenderer {
 
     let filterParts = [];
 
-    if (!hasAsset) {
+    if (!hasAsset && renderOptions.exactVisibility && segment.avatarAppearanceId == null) {
+      return this.renderNeutral(segment, avatarVideoPath, tempDir, renderOptions);
+    } else if (!hasAsset) {
       // === FULL AVATAR (with subtle zoom motion) ===
       const motion = segment.motion || 'slow_zoom_in';
       const zoomFilter = this.getAvatarMotion(motion, duration, fps, width, height);
@@ -53,7 +55,8 @@ export class SegmentRenderer {
         filterParts.push(`[1:v]scale=${preW}:${preH}:force_original_aspect_ratio=increase,crop=${preW}:${preH},${kbEffect}[asset]`);
       } else {
         // Video asset
-        args.push('-t', duration.toString(), '-i', segment.assetPath);
+        const sourceStart = Math.max(0, Number(segment.sourceInSeconds) || 0);
+        args.push('-ss', sourceStart.toString(), '-t', duration.toString(), '-i', segment.assetPath);
         filterParts.push(`[1:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}[asset]`);
       }
 
@@ -94,21 +97,38 @@ export class SegmentRenderer {
       '-filter_complex', filterComplex,
       '-map', '[final]',
       '-map', '0:a',  // Keep audio synced with video
-      ...this._encodeTail(segmentPath)
+      ...this._encodeTail(segmentPath, renderOptions)
     );
 
     await runFFmpeg(args, `segment ${segment.id} (${segment.layout})`);
     return segmentPath;
   }
 
+  output(options = {}) {
+    const resolution = options.output?.resolution || config.output.resolution;
+    return { width: Number(resolution.split('x')[0]), height: Number(resolution.split('x')[1]), fps: Number(options.output?.fps || config.output.fps) };
+  }
+
+  async renderNeutral(segment, avatarVideoPath, tempDir, renderOptions = {}) {
+    const out = path.join(tempDir, `seg_${segment.id}_neutral.mp4`);
+    const duration = Math.max(0.1, segment.end_time - segment.start_time);
+    const { width, height, fps } = this.output(renderOptions);
+    await runFFmpeg(['-ss', String(segment.start_time), '-t', String(duration), '-i', avatarVideoPath,
+      '-f', 'lavfi', '-i', `color=c=0x111827:s=${width}x${height}:r=${fps}:d=${duration}`,
+      '-map', '1:v', '-map', '0:a', '-shortest', ...this._encodeTail(out, renderOptions)], `segment ${segment.id} (neutral card)`);
+    return out;
+  }
+
   /**
    * Shared output-encoding args so every render path (full, safe, blank) produces
    * concat-compatible files with identical codec, timescale, and audio settings.
    */
-  _encodeTail(outPath) {
+  _encodeTail(outPath, renderOptions = {}) {
+    const requested = renderOptions.performance?.useGpu;
+    const useGpu = requested === true || requested === 'true' ? true : requested === false || requested === 'false' ? false : config.encoding.useGpu;
     return [
-      '-c:v', config.encoding.codec,
-      '-preset', config.encoding.preset,
+      '-c:v', useGpu ? 'h264_nvenc' : 'libx264',
+      '-preset', useGpu ? 'p4' : 'fast',
       '-video_track_timescale', '90000', // STRICT TIMELINE FIX: prevents the 1-hour concat duration bug
       '-c:a', 'aac',
       '-b:a', '128k',
@@ -122,10 +142,10 @@ export class SegmentRenderer {
    * scaled to frame, with its own audio. No asset, no overlay, no fancy filters.
    * Preserves the segment's duration and voice, so the timeline and captions stay in sync.
    */
-  async renderSafe(segment, avatarVideoPath, tempDir) {
+  async renderSafe(segment, avatarVideoPath, tempDir, renderOptions = {}) {
     const segmentPath = path.join(tempDir, `seg_${segment.id}_safe.mp4`);
     const duration = segment.end_time - segment.start_time;
-    const { width, height, fps } = config.output;
+    const { width, height, fps } = this.output(renderOptions);
 
     const args = [
       '-ss', segment.start_time.toString(),
@@ -135,7 +155,7 @@ export class SegmentRenderer {
       `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},format=yuv420p,setpts=PTS-STARTPTS[final]`,
       '-map', '[final]',
       '-map', '0:a',
-      ...this._encodeTail(segmentPath),
+      ...this._encodeTail(segmentPath, renderOptions),
     ];
 
     await runFFmpeg(args, `segment ${segment.id} (safe fallback)`);
@@ -147,10 +167,10 @@ export class SegmentRenderer {
    * with silent audio. Only reached if even the avatar slice fails. Guarantees the timeline
    * length is preserved so nothing downstream (concat, burned captions) desyncs.
    */
-  async renderBlank(segment, tempDir) {
+  async renderBlank(segment, tempDir, renderOptions = {}) {
     const segmentPath = path.join(tempDir, `seg_${segment.id}_blank.mp4`);
     const duration = Math.max(0.1, segment.end_time - segment.start_time);
-    const { width, height, fps } = config.output;
+    const { width, height, fps } = this.output(renderOptions);
 
     const args = [
       '-f', 'lavfi', '-i', `color=c=black:s=${width}x${height}:r=${fps}:d=${duration}`,
@@ -158,7 +178,7 @@ export class SegmentRenderer {
       '-t', duration.toString(),
       '-map', '0:v', '-map', '1:a',
       '-pix_fmt', 'yuv420p',
-      ...this._encodeTail(segmentPath),
+      ...this._encodeTail(segmentPath, renderOptions),
     ];
 
     await runFFmpeg(args, `segment ${segment.id} (blank fallback)`);

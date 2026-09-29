@@ -1,12 +1,33 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 
 let mainWindow;
 let backendProcess;
+let shuttingDown = false;
 
-function createWindow() {
+// Prevent two application process trees from competing for the same backend port and
+// blocking an installer upgrade. A second launch focuses the existing window.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
+function stopBackend() {
+  if (!backendProcess || backendProcess.killed) return;
+  const pid = backendProcess.pid;
+  backendProcess = null;
+  try {
+    if (process.platform === 'win32' && pid) {
+      // The backend can own ffmpeg/ffprobe children. Stop the exact child tree so no
+      // hidden Avatar Editor executable remains after the window is closed.
+      spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch { /* process already exited */ }
+}
+
+function createWindow(url) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -17,7 +38,7 @@ function createWindow() {
     autoHideMenuBar: true
   });
 
-  mainWindow.loadURL('http://localhost:3001');
+  mainWindow.loadURL(url);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -37,25 +58,30 @@ function startBackend() {
       ...process.env, 
       ELECTRON_RUN_AS_NODE: '1', 
       NODE_ENV: 'production', 
-      PORT: '3001',
+      PORT: '0',
       APP_ROOT: userDataPath,
-      FRONTEND_PATH: frontendPath
+      FRONTEND_PATH: frontendPath,
+      FRONTEND_URL: '*'
     }
   });
 
   let windowCreated = false;
+  const startupTimeout = setTimeout(() => {
+    if (windowCreated || shuttingDown) return;
+    dialog.showErrorBox('Avatar Editor could not start', `The local backend did not become ready. See ${path.join(userDataPath, 'backend.log')}`);
+    app.quit();
+  }, 20000);
 
   backendProcess.stdout.on('data', (data) => {
     const output = data.toString();
     logStream.write(`[STDOUT] ${output}`);
     console.log(`Backend: ${output}`);
 
-    if (!windowCreated && output.includes('running on http://localhost:3001')) {
+    const ready = output.match(/running on (http:\/\/localhost:\d+)/i);
+    if (!windowCreated && ready) {
       windowCreated = true;
-      createWindow();
-      if (mainWindow) {
-        mainWindow.webContents.openDevTools();
-      }
+      clearTimeout(startupTimeout);
+      createWindow(ready[1]);
     }
   });
 
@@ -63,20 +89,42 @@ function startBackend() {
     logStream.write(`[STDERR] ${data}`);
     console.error(`Backend Error: ${data}`);
   });
+  backendProcess.on('exit', (code) => {
+    backendProcess = null;
+    if (!windowCreated && !shuttingDown) {
+      clearTimeout(startupTimeout);
+      dialog.showErrorBox('Avatar Editor backend stopped', `The local backend exited with code ${code}. See ${path.join(userDataPath, 'backend.log')}`);
+      app.quit();
+    }
+  });
 }
 
-app.whenReady().then(() => {
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   startBackend();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      app.relaunch();
+      app.quit();
     }
   });
 });
 
+app.on('before-quit', () => {
+  shuttingDown = true;
+  stopBackend();
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    if (!shuttingDown) stopBackend();
     app.quit();
   }
 });

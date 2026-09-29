@@ -1,6 +1,7 @@
 import path from 'path';
 import { BasePipelineStage } from './BasePipelineStage.js';
 import { runFFmpeg, probeMedia } from '../utils/ffmpegHelpers.js';
+import { validateJobSettings } from '../config/jobSettings.js';
 
 export class AudioExtractor extends BasePipelineStage {
   constructor() {
@@ -18,6 +19,8 @@ export class AudioExtractor extends BasePipelineStage {
     context.videoDuration = videoInfo.duration;
     context.videoWidth = videoInfo.width;
     context.videoHeight = videoInfo.height;
+    const validation = validateJobSettings(context.settings, videoInfo.duration);
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
 
     // Extract audio as MP3 (Groq accepts mp3, max 25MB)
     await runFFmpeg([

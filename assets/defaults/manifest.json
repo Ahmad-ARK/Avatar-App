@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "licenseNote": "User-supplied sample-pack assets; verify original pack terms before redistribution.",
+  "assets": [
+    {"id":"sfx-whoosh-analog","file":"sfx/whoosh-analog.wav","kind":"sfx","cueType":"whoosh","tags":["transition","movement","broll"],"duration":2.2,"sourceIn":0.15,"sourceOut":2.1,"gain":0.75,"provenance":"SAMPLE Analog Whip FX/Whip_Whoosh_021.wav"},
+    {"id":"sfx-hit-cinematic","file":"sfx/hit-cinematic.wav","kind":"sfx","cueType":"hit","tags":["dramatic","reveal","cut"],"duration":6.3,"sourceIn":0,"sourceOut":3.2,"gain":0.55,"provenance":"CinePacks Sfx SAMPLE/Hit_5.wav"},
+    {"id":"sfx-riser-bass","file":"sfx/riser-bass.wav","kind":"sfx","cueType":"riser","tags":["build","dramatic"],"duration":10.3,"sourceIn":4.3,"sourceOut":10.2,"gain":0.45,"provenance":"CinePacks Sfx SAMPLE/Bass_riser.wav"},
+    {"id":"sfx-hit-subtle","file":"sfx/hit-subtle.wav","kind":"sfx","cueType":"hit","tags":["subtle","fact","cut"],"duration":2.6,"sourceIn":0,"sourceOut":2.5,"gain":0.55,"provenance":"Scary Sound FX/Hits/Subtle Bass 2.wav"},
+    {"id":"sfx-hit-slam","file":"sfx/hit-slam.wav","kind":"sfx","cueType":"hit","tags":["slam","impact","headline"],"duration":0.9,"sourceIn":0,"sourceOut":0.85,"gain":0.5,"provenance":"Scary Sound FX/Hits/Slam.wav"},
+    {"id":"sfx-reveal","file":"sfx/reveal.wav","kind":"sfx","cueType":"reveal","tags":["reveal","title","conclusion"],"duration":6.4,"sourceIn":0,"sourceOut":4.5,"gain":0.45,"provenance":"Scary Sound FX/Hits/Reveal.wav"},
+    {"id":"sfx-hit-double","file":"sfx/hit-double.wav","kind":"sfx","cueType":"hit","tags":["double","impact","warning"],"duration":1.4,"sourceIn":0,"sourceOut":1.35,"gain":0.5,"provenance":"Scary Sound FX/Drums/Double Hit.wav"},
+    {"id":"sfx-riser-static","file":"sfx/riser-static.wav","kind":"sfx","cueType":"riser","tags":["technology","glitch","build"],"duration":4.5,"sourceIn":0,"sourceOut":4.4,"gain":0.4,"provenance":"Scary Sound FX/Riser/Static_Wave_.wav"},
+    {"id":"sfx-paper-rip","file":"sfx/paper-rip.wav","kind":"sfx","cueType":"paper","tags":["paper","document","history"],"duration":1,"sourceIn":0,"sourceOut":0.95,"gain":0.65,"provenance":"CinePacks FREE Paper FX Pack/Paper Transition FX SAMPLE/Paper_rip_01.wav"},
+    {"id":"sfx-paper-crinkle","file":"sfx/paper-crinkle.wav","kind":"sfx","cueType":"paper","tags":["paper","document","texture"],"duration":2.6,"sourceIn":0,"sourceOut":2.5,"gain":0.55,"provenance":"CinePacks FREE Paper FX Pack/Paper Transition FX SAMPLE/Paper_crinkle_04.wav"},
+    {"id":"sfx-tape","file":"sfx/tape.wav","kind":"sfx","cueType":"paper","tags":["tape","collage","document"],"duration":1.1,"sourceIn":0,"sourceOut":1.05,"gain":0.55,"provenance":"CinePacks FREE Paper FX Pack/Paper FX 2 SAMPLE/Tape 08.wav"},
+    {"id":"sfx-tv-static","file":"sfx/tv-static.wav","kind":"sfx","cueType":"glitch","tags":["television","static","technology"],"duration":5.6,"sourceIn":0,"sourceOut":2.5,"gain":0.35,"provenance":"Scary Sound FX/Moments/TV Static 1.wav"},
+    {"id":"sfx-heartbeat","file":"sfx/heartbeat.wav","kind":"sfx","cueType":"tension","tags":["tension","danger","war"],"duration":6.6,"sourceIn":0,"sourceOut":4,"gain":0.35,"provenance":"Scary Sound FX/Moments/Heartbeat.wav"},
+    {"id":"sfx-chimes-creepy","file":"sfx/chimes-creepy.wav","kind":"sfx","cueType":"tension","tags":["mystery","dark","warning"],"duration":10.8,"sourceIn":0,"sourceOut":4.5,"gain":0.3,"provenance":"Scary Sound FX/Drums/Creepy Chimes 1.wav"},
+    {"id":"sfx-film-projector","file":"sfx/film-projector.wav","kind":"sfx","cueType":"texture","tags":["archive","history","film"],"duration":2.7,"sourceIn":0,"sourceOut":2.6,"gain":0.35,"provenance":"CinePacks 16mm Film FX FREE SAMPLE/Film Sound 2.wav"}
+  ]
+}

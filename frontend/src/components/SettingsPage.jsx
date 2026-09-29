@@ -76,6 +76,15 @@ const SettingsPage = ({ backendUrl }) => {
               <label className="form-label">Pixabay API Key (Stock Assets)</label>
               <input type="password" name="pixabayApiKey" value={formData.pixabayApiKey || ''} onChange={handleChange} className="form-input" />
             </div>
+            <div className="form-group mt-1">
+              <label className="form-label">Serper API Key (optional, free-credit-only)</label>
+              <input type="password" name="serperApiKey" value={formData.serperApiKey || ''} onChange={handleChange} className="form-input" placeholder="Leave blank to use other sources" />
+              <span className="setting-note">The app has no purchase or upgrade flow. Set the remaining allowance below; it does not assume a monthly refill.</span>
+            </div>
+            <div className="grid-2">
+              <div className="form-group"><label className="form-label">Serper enabled</label><select name="serperEnabled" value={String(formData.serperEnabled || 'false')} onChange={handleChange} className="form-input"><option value="false">Off</option><option value="true">On</option></select></div>
+              <div className="form-group"><label className="form-label">Estimated free credits remaining</label><input type="number" min="0" max="2500" name="serperFreeCreditsRemaining" value={formData.serperFreeCreditsRemaining ?? 2500} onChange={handleChange} className="form-input" /></div>
+            </div>
           </section>
 
           <section className="settings-section">
@@ -87,16 +96,22 @@ const SettingsPage = ({ backendUrl }) => {
               <input type="text" name="modalEndpoint" value={formData.modalEndpoint || ''} onChange={handleChange} className="form-input" placeholder="https://username--flux-api-model-web.modal.run" />
             </div>
             <div className="grid-2">
+              <div className="form-group"><label className="form-label">Qwen image endpoint</label><input type="text" name="modalImageEndpoint" value={formData.modalImageEndpoint || ''} onChange={handleChange} className="form-input" /></div>
+              <div className="form-group"><label className="form-label">Qwen vision endpoint</label><input type="text" name="modalVisionEndpoint" value={formData.modalVisionEndpoint || ''} onChange={handleChange} className="form-input" /></div>
+            </div>
+            <div className="grid-2">
               <div className="form-group">
                 <label className="form-label">Token ID</label>
-                <input type="password" name="modalTokenId" value={formData.modalTokenId || ''} onChange={handleChange} className="form-input" placeholder="ak-..." />
+                <input type="password" name="modalTokenId" value={formData.modalTokenId || ''} onChange={handleChange} className="form-input" placeholder="Optional for protected endpoint" />
               </div>
               <div className="form-group">
                 <label className="form-label">Token Secret</label>
-                <input type="password" name="modalTokenSecret" value={formData.modalTokenSecret || ''} onChange={handleChange} className="form-input" placeholder="as-..." />
+                <input type="password" name="modalTokenSecret" value={formData.modalTokenSecret || ''} onChange={handleChange} className="form-input" placeholder="Optional for protected endpoint" />
               </div>
             </div>
           </section>
+
+          <section className="settings-section"><h3 className="section-title"><Server size={16}/> Local tools</h3><div className="grid-2"><div className="form-group"><label className="form-label">Python executable</label><input type="text" name="pythonPath" value={formData.pythonPath || ''} onChange={handleChange} className="form-input" placeholder="python or venv path" /></div><div className="form-group"><label className="form-label">yt-dlp executable</label><input type="text" name="ytDlpPath" value={formData.ytDlpPath || ''} onChange={handleChange} className="form-input" placeholder="yt-dlp" /></div></div></section>
 
           <section className="settings-section">
             <h3 className="section-title">

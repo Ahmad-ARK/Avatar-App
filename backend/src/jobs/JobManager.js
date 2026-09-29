@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { PipelineOrchestrator } from '../pipeline/PipelineOrchestrator.js';
+import config from '../config.js';
+import { normalizeJobSettings, validateJobSettings } from '../config/jobSettings.js';
 
 export class JobManager {
   constructor(io) {
@@ -9,11 +11,14 @@ export class JobManager {
 
   createJob(videoPath, settings) {
     const jobId = uuidv4();
+    const settingsSnapshot = normalizeJobSettings(config.getSettings(), settings || {});
+    const initialValidation = validateJobSettings(settingsSnapshot);
+    if (!initialValidation.valid) throw new Error(initialValidation.errors.join(' '));
     const job = {
       id: jobId,
       status: 'pending',
       videoPath,
-      settings,
+      settings: settingsSnapshot,
       progress: 0,
       stage: 'queued',
       result: null,
@@ -54,6 +59,7 @@ export class JobManager {
       job.result = {
         videoUrl: `/output/${jobId}.mp4`,
         nicheConfig: resultContext.nicheConfig,
+        report: resultContext.renderReport || null,
       };
       job.progress = 100;
       job.message = 'Done';

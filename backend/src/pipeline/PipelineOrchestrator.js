@@ -1,11 +1,13 @@
 import path from 'path';
 import fs from 'fs-extra';
 import config from '../config.js';
+import { normalizeJobSettings } from '../config/jobSettings.js';
 
 import { AudioExtractor } from './AudioExtractor.js';
 import { Transcriber } from './Transcriber.js';
 import { NicheClassifier } from './NicheClassifier.js';
 import { ScenePlanner } from './ScenePlanner.js';
+import { SoundEffectPlanner } from './SoundEffectPlanner.js';
 import { AssetFetcher } from './AssetFetcher.js';
 import { AssetVerifier } from './AssetVerifier.js';
 import { CaptionEngine } from './CaptionEngine.js';
@@ -18,7 +20,7 @@ export class PipelineOrchestrator {
     this.context = {
       jobId: job.id,
       videoPath: job.videoPath,
-      settings: job.settings,
+      settings: normalizeJobSettings({}, job.settings),
       tempDir: path.join(config.paths.temp, job.id),
     };
     this.onProgress = null; // Set by JobManager
@@ -29,6 +31,7 @@ export class PipelineOrchestrator {
       new Transcriber(),
       new NicheClassifier(),
       new ScenePlanner(),
+      new SoundEffectPlanner(),
       new AssetFetcher(),
       new AssetVerifier(),
       new CaptionEngine(),

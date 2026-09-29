@@ -513,3 +513,9 @@ input:checked + .slider:before {
 .mt-8 { margin-top: 2rem; }
 .gap-4 { gap: 1rem; }
 .gap-2 { gap: 0.5rem; }
+.setting-note { font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.65rem; line-height: 1.4; }
+.asset-list { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
+.asset-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem .8rem; border: 1px solid var(--border-color); border-radius: .65rem; background: rgba(0,0,0,.18); }
+.asset-row > span { display: flex; align-items: center; gap: .5rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.asset-thumb { width: 72px; height: 44px; object-fit: cover; border-radius: .4rem; background: #020617; flex: none; }
+@media (max-width: 800px) { .sidebar { width: 210px; } .grid-2 { grid-template-columns: 1fr; } }

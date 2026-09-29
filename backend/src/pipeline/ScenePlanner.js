@@ -3,6 +3,7 @@ import { chatCompletion } from '../services/llmService.js';
 import { enforceRhythmRules, VISUAL_DENSITY_TARGETS, VISUAL_ONLY_MAX_SECONDS } from '../utils/rhythmRules.js';
 import { SCENE_PLANNING_PROMPT } from '../presets/nichePresets.js';
 import config from '../config.js';
+import { buildAvatarSchedule, applyAvatarSchedule } from '../planning/avatarSchedule.js';
 
 export class ScenePlanner extends BasePipelineStage {
   constructor() {
@@ -68,8 +69,8 @@ export class ScenePlanner extends BasePipelineStage {
     const { transcript, nicheConfig, videoDuration } = context;
 
     // Resolve the user's avatar-vs-visual preference (Settings → Video Style).
-    const visualDensity = config.planning.visualDensity;
-    const enablePip = config.planning.enableAvatarPip;
+    const visualDensity = context.settings?.visualDensity || config.planning.visualDensity;
+    const enablePip = context.settings?.enableAvatarPip ?? config.planning.enableAvatarPip;
     const targetVisualRatio = VISUAL_DENSITY_TARGETS[visualDensity] ?? VISUAL_DENSITY_TARGETS.balanced;
     const fallbackQuery = `${nicheConfig?.niche || 'cinematic'} ${nicheConfig?.sub_niche || 'b-roll'}`
       .replace(/_/g, ' ')
@@ -113,6 +114,9 @@ export class ScenePlanner extends BasePipelineStage {
             let sumDuration = 0;
             for (const seg of result.segments) {
               seg.duration = Math.max(0.1, (seg.end_time || 0) - (seg.start_time || 0));
+            seg.visualCategory = seg.visual_category || 'generic_broll';
+            seg.entityName = seg.entity_name || null;
+            seg.realPersonRelevant = seg.visualCategory === 'person_reference';
               sumDuration += seg.duration;
             }
             
@@ -163,7 +167,7 @@ export class ScenePlanner extends BasePipelineStage {
     }
 
     // Enforce rhythm + visual-density rules (deterministic backstop for the LLM plan)
-    const enforcedSegments = enforceRhythmRules(allSegments, videoDuration, {
+    let enforcedSegments = enforceRhythmRules(allSegments, videoDuration, {
       transcriptWords: transcript.words,
       targetVisualRatio,
       enablePip,
@@ -171,9 +175,15 @@ export class ScenePlanner extends BasePipelineStage {
       visualOnlyMaxSeconds: VISUAL_ONLY_MAX_SECONDS[visualDensity] ?? VISUAL_ONLY_MAX_SECONDS.balanced,
     });
 
+    const fps = context.settings?.output?.fps || config.output.fps;
+    const boundaries = transcript.words.filter(w => /[.!?]$/.test(w.word)).map(w => w.end);
+    context.avatarSchedule = buildAvatarSchedule({ durationSeconds: videoDuration, fps, avatar: context.settings.avatar, topicBoundaries: boundaries });
+    if (context.settings.avatar.mode !== 'auto') enforcedSegments = applyAvatarSchedule(enforcedSegments, context.avatarSchedule, fps, videoDuration);
+
     context.scenePlan = {
       segments: enforcedSegments,
       totalSegments: enforcedSegments.length,
+      avatarSchedule: context.avatarSchedule,
     };
 
     this.emitProgress(100, `Planned ${enforcedSegments.length} segments`);

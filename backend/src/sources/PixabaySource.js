@@ -5,9 +5,11 @@ import config from '../config.js';
 export class PixabaySource extends BaseAssetSource {
   constructor() {
     super('pixabay');
+    this.capabilities = new Set(['image', 'video']);
   }
 
   async search(query, type = 'image', count = 5) {
+    if (!config.pixabay.apiKey) return [];
     // Pixabay: key goes in query param, NOT header
     const params = new URLSearchParams({
       key: config.pixabay.apiKey,
@@ -18,7 +20,10 @@ export class PixabaySource extends BaseAssetSource {
       safesearch: 'true',
     });
 
-    const data = await apiJson(`${config.pixabay.endpoint}?${params}`);
+    const endpoint = type === 'video' ? `${config.pixabay.endpoint}videos/` : config.pixabay.endpoint;
+    if (type === 'video') params.delete('image_type');
+    const data = await apiJson(`${endpoint}?${params}`);
+    if (type === 'video') return (data.hits || []).map(h => { const v = h.videos?.medium || h.videos?.small || h.videos?.large; return { id: `pixabay-v-${h.id}`, url: v?.url, thumbUrl: null, width: v?.width, height: v?.height, type: 'video', source: 'pixabay', attribution: `Video by ${h.user} on Pixabay` }; }).filter(v => v.url);
 
     return (data.hits || []).map(h => ({
       id: `pixabay-${h.id}`,

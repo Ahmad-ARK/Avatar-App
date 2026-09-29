@@ -77,6 +77,8 @@ You MUST respond with valid JSON. Your response format:
       "motion": "slow_zoom_in|slow_zoom_out|subtle_drift|ken_burns|none",
       "visual_query": "search query for stock images/video (null if layout is full_avatar)",
       "visual_type": "image|video",
+      "visual_category": "generic_broll|event_footage|person_reference|illustration|graphic",
+      "entity_name": "named person/event/place or null",
       "text_overlay": "Short text (1-4 words) to show on screen (e.g. 'RULE 1', 'KEY TAKEAWAY'), or null if not needed"
     }
   ]
@@ -103,6 +105,7 @@ You MUST respond with valid JSON. Your response format:
    - BAD: "health" or "medical stuff"
 10. EVERY non-full_avatar segment MUST have a visual_query — never null
 11. Prefer "video" type for action scenes, "image" for abstract concepts
+11a. Use event_footage only for a named, specific real event and person_reference only for a named real person. Generic war/crowd/city footage is generic_broll.
 
 ### Motion Rules  
 12. "full_avatar" → motion must be "slow_zoom_in", "slow_zoom_out", or "subtle_drift"

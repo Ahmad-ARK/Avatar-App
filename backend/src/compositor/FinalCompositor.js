@@ -7,6 +7,7 @@ import { isUsableFile, quoteFilterPath } from '../utils/ffmpegSafe.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getColorGrade } from '../utils/colorGrade.js';
 import { pickMusicTrack, buildMusicMixFilter } from '../utils/audioMix.js';
+import { renderSfxTrack, appendSfxMix } from '../utils/sfxMix.js';
 import { canTransition, buildXfadeChain, buildAcrossfadeChain, retimeWords } from './transitions.js';
 import { CaptionEngine } from '../pipeline/CaptionEngine.js';
 import config from '../config.js';
@@ -44,7 +45,7 @@ export class FinalCompositor extends BasePipelineStage {
       console.log(`[FinalCompositor] GPU encode ${nvenc ? 'enabled (h264_nvenc)' : 'unavailable → libx264 (CPU)'}`);
     }
 
-    const concurrency = config.encoding.concurrency;
+    const concurrency = Number.isFinite(Number(context.settings?.performance?.renderConcurrency)) ? Number(context.settings.performance.renderConcurrency) : config.encoding.concurrency;
     this.emitProgress(0, `Rendering ${segments.length} segments (${config.encoding.codec}, x${concurrency})...`);
 
     // 1. Render segments in parallel (bounded) through a per-segment fallback chain, so ONE
@@ -54,7 +55,7 @@ export class FinalCompositor extends BasePipelineStage {
     const tally = { ok: 0, safe: 0, blank: 0, skipped: 0 };
     let completed = 0;
     const orderedPaths = await mapWithConcurrency(segments, concurrency, async (seg) => {
-      const p = await this.renderSegmentResilient(seg, videoPath, tempDir, context.nicheConfig, tally);
+      const p = await this.renderSegmentResilient(seg, videoPath, tempDir, context.nicheConfig, tally, context.settings);
       completed++;
       this.emitProgress(Math.round((completed / segments.length) * 60), `Rendered ${completed}/${segments.length} segments`);
       return p;
@@ -80,20 +81,23 @@ export class FinalCompositor extends BasePipelineStage {
 
     // Shared finalize inputs
     const finalOutputPath = path.join(config.paths.output, `${jobId}.mp4`);
-    const gradeFilter = config.style.enableColorGrade ? getColorGrade(context.nicheConfig) : '';
+    const gradeFilter = context.settings?.style?.enableColorGrade !== false && config.style.enableColorGrade ? getColorGrade(context.nicheConfig) : '';
     let musicPath = null;
-    if (config.style.enableMusic) {
+    if (context.settings?.style?.enableMusic !== false && config.style.enableMusic) {
       musicPath = pickMusicTrack([config.paths.music, config.paths.userMusic]);
       if (musicPath) console.log(`[FinalCompositor] Music bed: ${path.basename(musicPath)}`);
     }
+    const sfxPath = await renderSfxTrack(context.sfxCues, context.videoDuration, tempDir, context.settings?.style?.sfxVolume ?? 0.28);
+    if (sfxPath) console.log(`[FinalCompositor] SFX timeline: ${context.sfxCues.length} cue(s)`);
 
     // 2. TRANSITIONS PATH (preferred): crossfade the segments and burn everything in one pass.
     // Only when it's safe (no dropped segments, every clip longer than the overlap). Captions
     // are re-timed to the shortened timeline. Any failure falls back to hard cuts below.
-    const D = config.style.transitionDuration;
+    const D = context.settings?.style?.transitionDuration || config.style.transitionDuration;
     const durations = rendered.map(r => r.duration);
     let applied = null;
-    if (config.style.enableTransitions && !hadDrops && canTransition(durations, D)) {
+    const exactVisibility = context.settings?.avatar?.mode !== 'auto';
+    if (!sfxPath && !exactVisibility && context.settings?.style?.enableTransitions !== false && config.style.enableTransitions && !hadDrops && canTransition(durations, D)) {
       this.emitProgress(70, 'Finalizing (transitions, grade, captions, music)...');
       try {
         const retimedCaptions = this.writeRetimedCaptions(context, D, tempDir);
@@ -102,7 +106,7 @@ export class FinalCompositor extends BasePipelineStage {
           durations, transitionD: D,
           outPath: finalOutputPath,
           captionsPath: retimedCaptions,
-          gradeFilter, musicPath,
+          gradeFilter, musicPath, encoder: this.encoderFor(context.settings), musicVolume: context.settings?.style?.musicVolume,
         });
       } catch (err) {
         console.warn(`[FinalCompositor] Transition assembly failed (${err.message}); falling back to hard cuts.`);
@@ -128,6 +132,7 @@ export class FinalCompositor extends BasePipelineStage {
         captionsPath,
         gradeFilter,
         musicPath,
+        narrationPath: exactVisibility ? videoPath : null, sfxPath, encoder: this.encoderFor(context.settings), musicVolume: context.settings?.style?.musicVolume,
       });
     }
 
@@ -136,6 +141,18 @@ export class FinalCompositor extends BasePipelineStage {
     context.musicApplied = applied.music;
     context.colorGradeApplied = applied.grade;
     context.transitionsApplied = !!applied.transitions;
+    const intervals = context.avatarSchedule?.intervals || [];
+    context.renderReport = {
+      schemaVersion: 1,
+      requestedAvatar: { mode: context.settings?.avatar?.mode, appearanceCount: context.settings?.avatar?.appearanceCount, secondsPerAppearance: context.settings?.avatar?.secondsPerAppearance },
+      renderedAvatar: { appearanceCount: intervals === null ? null : intervals.length, totalSeconds: context.avatarSchedule?.renderedSeconds ?? null, intervals },
+      assets: segments.filter(s => s.assetSource).map(s => ({ segmentId: s.id, source: s.assetSource, attribution: s.assetAttribution || null, verification: s.verification?.status || s.verification || null })),
+      warnings: segments.filter(s => s.fallbackReason || s.assetError).map(s => s.fallbackReason || s.assetError),
+      transitionsApplied: !!applied.transitions,
+      usage: context.usage || {},
+      soundEffects: (context.sfxCues || []).map(({ assetPath, ...cue }) => ({ ...cue, file: path.relative(config.paths.bundledDefaults, assetPath).replace(/\\/g, '/') })),
+    };
+    await fs.writeJson(path.join(config.paths.output, `${jobId}.report.json`), context.renderReport, { spaces: 2 });
     this.emitProgress(100, 'Video rendering complete');
     return context;
   }
@@ -160,13 +177,13 @@ export class FinalCompositor extends BasePipelineStage {
    * without, so a weird music track can't sink the transition path. Throws if it can't produce
    * a video at all (caller then falls back to hard cuts).
    */
-  async finalizeWithTransitions({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath }) {
+  async finalizeWithTransitions({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath, encoder, musicVolume }) {
     const attempts = musicPath ? [musicPath, null] : [null];
     let lastErr;
     for (const music of attempts) {
       try {
         await runFFmpeg(
-          this.buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath: music }),
+          this.buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath: music, encoder, musicVolume }),
           `transition finalize (music=${!!music})`
         );
         return { grade: !!gradeFilter, captions: !!captionsPath, music: !!music, transitions: true };
@@ -179,7 +196,7 @@ export class FinalCompositor extends BasePipelineStage {
   }
 
   /** Build the combined xfade + grade + captions + music single-pass args. */
-  buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath }) {
+  buildTransitionFinalizeArgs({ segmentFiles, durations, transitionD, outPath, captionsPath, gradeFilter, musicPath, encoder = { codec: config.encoding.codec, preset: config.encoding.preset }, musicVolume = config.style.musicVolume }) {
     const n = segmentFiles.length;
     const inputs = [];
     for (const f of segmentFiles) inputs.push('-i', f);
@@ -200,7 +217,7 @@ export class FinalCompositor extends BasePipelineStage {
     let audioCodec = ['-c:a', 'aac', '-b:a', '192k'];
     if (musicPath) {
       inputs.push('-stream_loop', '-1', '-i', musicPath);
-      const { filter, outLabel } = buildMusicMixFilter({ musicInput: n, volume: config.style.musicVolume, voiceLabel: aAcc });
+      const { filter, outLabel } = buildMusicMixFilter({ musicInput: n, volume: musicVolume, voiceLabel: aAcc });
       fc.push(filter);
       audioMap = outLabel;
     }
@@ -210,8 +227,8 @@ export class FinalCompositor extends BasePipelineStage {
       '-filter_complex', fc.join(';'),
       '-map', '[vout]',
       '-map', audioMap,
-      '-c:v', config.encoding.codec,
-      '-preset', config.encoding.preset,
+      '-c:v', encoder.codec,
+      '-preset', encoder.preset,
       ...audioCodec,
       '-shortest',
       '-y',
@@ -223,12 +240,12 @@ export class FinalCompositor extends BasePipelineStage {
    * Assemble the final video, trying the richest feature set first and falling back on
    * failure. Returns which features actually made it in.
    */
-  async finalize({ concatPath, outPath, captionsPath, gradeFilter, musicPath }) {
+  async finalize({ concatPath, outPath, captionsPath, gradeFilter, musicPath, narrationPath = null, sfxPath = null, encoder, musicVolume }) {
     const attempts = [];
     if (musicPath) attempts.push({ grade: gradeFilter, captions: captionsPath, music: musicPath });
     attempts.push({ grade: gradeFilter, captions: captionsPath, music: null });
     if (gradeFilter) attempts.push({ grade: '', captions: captionsPath, music: null });
-    attempts.push({ passthrough: true }); // last resort: ship the concat as-is
+    if (!narrationPath) attempts.push({ passthrough: true }); // auto-mode last resort
 
     for (const a of attempts) {
       try {
@@ -237,7 +254,7 @@ export class FinalCompositor extends BasePipelineStage {
           return { grade: false, captions: false, music: false };
         }
         await runFFmpeg(
-          this.buildFinalizeArgs({ concatPath, outPath, ...a }),
+          this.buildFinalizeArgs({ concatPath, outPath, narrationPath, sfxPath, encoder, musicVolume, ...a }),
           `finalize (grade=${!!a.grade} captions=${!!a.captions} music=${!!a.music})`
         );
         return { grade: !!a.grade, captions: !!a.captions, music: !!a.music };
@@ -245,12 +262,14 @@ export class FinalCompositor extends BasePipelineStage {
         console.warn(`[FinalCompositor] finalize attempt failed: ${err.message}`);
       }
     }
+    if (narrationPath) throw new Error('Could not finalize exact timeline with continuous narration');
     return { grade: false, captions: false, music: false };
   }
 
   /** Build the single-pass finalize ffmpeg args for a given feature set. */
-  buildFinalizeArgs({ concatPath, outPath, captionsPath, gradeFilter, musicPath }) {
+  buildFinalizeArgs({ concatPath, outPath, captionsPath, gradeFilter, musicPath, narrationPath = null, sfxPath = null, encoder = { codec: config.encoding.codec, preset: config.encoding.preset }, musicVolume = config.style.musicVolume }) {
     const inputs = ['-i', concatPath];
+    if (narrationPath) inputs.push('-i', narrationPath);
 
     // Video chain: [grade,] captions. Always non-empty here (captions present on every attempt
     // that isn't passthrough); use `null` as a safety if somehow both are absent.
@@ -261,13 +280,20 @@ export class FinalCompositor extends BasePipelineStage {
     const fc = [`[0:v]${videoChain}[vout]`];
 
     const args = [];
-    let audioMap = '0:a';
-    let audioCodec = ['-c:a', 'copy'];
+    let audioMap = narrationPath ? '1:a' : '0:a';
+    let audioCodec = narrationPath ? ['-c:a', 'aac', '-b:a', '192k'] : ['-c:a', 'copy'];
     if (musicPath) {
       inputs.push('-stream_loop', '-1', '-i', musicPath); // loop music to cover the whole video
-      const { filter, outLabel } = buildMusicMixFilter({ musicInput: 1, volume: config.style.musicVolume });
+      const musicInput = narrationPath ? 2 : 1;
+      const voiceLabel = narrationPath ? '[1:a]' : '[0:a]';
+      const { filter, outLabel } = buildMusicMixFilter({ musicInput, volume: musicVolume, voiceLabel });
       fc.push(filter);
       audioMap = outLabel;
+      audioCodec = ['-c:a', 'aac', '-b:a', '192k'];
+    }
+    if (sfxPath) {
+      inputs.push('-i', sfxPath);
+      audioMap = appendSfxMix(fc, audioMap.startsWith('[') ? audioMap : `[${audioMap}]`, inputs.filter(v => v === '-i').length - 1);
       audioCodec = ['-c:a', 'aac', '-b:a', '192k'];
     }
 
@@ -276,8 +302,8 @@ export class FinalCompositor extends BasePipelineStage {
       '-filter_complex', fc.join(';'),
       '-map', '[vout]',
       '-map', audioMap,
-      '-c:v', config.encoding.codec,
-      '-preset', config.encoding.preset,
+      '-c:v', encoder.codec,
+      '-preset', encoder.preset,
       ...audioCodec,
       '-shortest',
       '-y',
@@ -290,10 +316,11 @@ export class FinalCompositor extends BasePipelineStage {
    * Render one segment through a fallback chain, updating `tally`. Returns the output path,
    * or null only if every strategy failed (that segment is then dropped from the timeline).
    */
-  async renderSegmentResilient(seg, videoPath, tempDir, nicheConfig, tally) {
+  async renderSegmentResilient(seg, videoPath, tempDir, nicheConfig, tally, settings = {}) {
+    const renderOptions = { output: settings.output, performance: settings.performance, exactVisibility: settings.avatar?.mode !== 'auto' };
     // 1. Full styled render.
     try {
-      const p = await this.renderer.render(seg, videoPath, tempDir, nicheConfig);
+      const p = await this.renderer.render(seg, videoPath, tempDir, nicheConfig, renderOptions);
       tally.ok++;
       return p;
     } catch (err) {
@@ -302,16 +329,19 @@ export class FinalCompositor extends BasePipelineStage {
 
     // 2. Safe fallback — plain avatar slice (keeps voice + duration).
     try {
-      const p = await this.renderer.renderSafe(seg, videoPath, tempDir);
+      const p = renderOptions.exactVisibility && seg.avatarAppearanceId == null
+        ? await this.renderer.renderNeutral(seg, videoPath, tempDir, renderOptions)
+        : await this.renderer.renderSafe(seg, videoPath, tempDir, renderOptions);
       tally.safe++;
       return p;
     } catch (err) {
       console.warn(`[FinalCompositor] Segment ${seg.id} safe fallback failed: ${err.message}`);
+      if (renderOptions.exactVisibility) throw new Error(`Exact-visibility segment ${seg.id} could not preserve its required video/audio timeline: ${err.message}`);
     }
 
     // 3. Blank fallback — black + silence of the exact duration (keeps the timeline intact).
     try {
-      const p = await this.renderer.renderBlank(seg, tempDir);
+      const p = await this.renderer.renderBlank(seg, tempDir, renderOptions);
       tally.blank++;
       return p;
     } catch (err) {
@@ -319,5 +349,11 @@ export class FinalCompositor extends BasePipelineStage {
       tally.skipped++;
       return null;
     }
+  }
+
+  encoderFor(settings = {}) {
+    const requested = settings.performance?.useGpu;
+    const useGpu = requested === true || requested === 'true' ? true : requested === false || requested === 'false' ? false : config.encoding.useGpu;
+    return { codec: useGpu ? 'h264_nvenc' : 'libx264', preset: useGpu ? 'p4' : 'fast' };
   }
 }

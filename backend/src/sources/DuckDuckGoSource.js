@@ -4,9 +4,11 @@ import { apiJson } from '../services/apiClient.js';
 export class DuckDuckGoSource extends BaseAssetSource {
   constructor() {
     super('duckduckgo');
+    this.capabilities = new Set(['image']);
   }
 
   async search(query, type = 'image', count = 5) {
+    if (type !== 'image') return [];
     try {
       // DuckDuckGo image search via their vqd token flow
       // Step 1: Get vqd token

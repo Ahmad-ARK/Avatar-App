@@ -5,9 +5,11 @@ import config from '../config.js';
 export class WikimediaSource extends BaseAssetSource {
   constructor() {
     super('wikimedia');
+    this.capabilities = new Set(['image']);
   }
 
   async search(query, type = 'image', count = 5) {
+    if (type !== 'image') return [];
     const params = new URLSearchParams({
       action: 'query',
       generator: 'search',

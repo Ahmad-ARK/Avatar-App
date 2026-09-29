@@ -13,9 +13,16 @@ const ffprobePath = ffprobeStatic.path;
  * @param {string} [label] - human label for error messages (e.g. "segment 3 (split_screen)")
  * @returns {Promise<void>}
  */
-export function runFFmpeg(args, label = '') {
+export function runFFmpeg(args, label = '', timeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath, args);
+    let settled = false;
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { proc.kill('SIGKILL'); } catch {}
+      reject(new Error(`FFmpeg timed out${label ? ` while rendering ${label}` : ''} after ${Math.round(timeoutMs / 1000)} seconds`));
+    }, timeoutMs) : null;
 
     let errorLog = '';
     proc.stderr.on('data', (data) => {
@@ -23,12 +30,18 @@ export function runFFmpeg(args, label = '') {
     });
 
     proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       if (code === 0) return resolve();
       const where = label ? ` while rendering ${label}` : '';
       reject(new Error(`FFmpeg failed${where} (exit ${code}): ${summarizeFFmpegError(errorLog)}`));
     });
 
     proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       reject(new Error(`Failed to start FFmpeg${label ? ` for ${label}` : ''}: ${err.message}`));
     });
   });
@@ -102,8 +115,7 @@ export function probeMedia(filePath) {
   return new Promise((resolve, reject) => {
     const args = [
       '-v', 'error',
-      '-select_streams', 'v:0',
-      '-show_entries', 'stream=width,height,duration',
+      '-show_entries', 'stream=codec_type,width,height,duration,avg_frame_rate:format=duration',
       '-of', 'json',
       filePath,
     ];
@@ -117,12 +129,14 @@ export function probeMedia(filePath) {
       if (code !== 0) return reject(new Error('ffprobe failed'));
       try {
         const info = JSON.parse(output);
-        const stream = info.streams[0];
-        // If duration missing in video stream, fallback to format duration (omitted for brevity, assume valid for now)
+        const stream = info.streams.find(s => s.codec_type === 'video') || info.streams[0] || {};
+        const rate = String(stream.avg_frame_rate || '0/1').split('/').map(Number);
         resolve({
-          duration: parseFloat(stream.duration || 0),
+          duration: parseFloat(stream.duration || info.format?.duration || 0),
           width: parseInt(stream.width || 0),
           height: parseInt(stream.height || 0),
+          fps: rate[1] ? rate[0] / rate[1] : 0,
+          hasAudio: info.streams.some(s => s.codec_type === 'audio'),
         });
       } catch (e) {
         reject(new Error('Failed to parse ffprobe output'));

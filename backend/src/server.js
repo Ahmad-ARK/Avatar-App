@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import config from './config.js';
 import { JobManager } from './jobs/JobManager.js';
 import { createApiRouter } from './routes/api.js';
+import { assetCatalog } from './assets/catalog.js';
 
 // Ensure directories exist
 fs.ensureDirSync(config.paths.uploads);
@@ -13,6 +14,8 @@ fs.ensureDirSync(config.paths.output);
 fs.ensureDirSync(config.paths.temp);
 fs.ensureDirSync(config.paths.cache);
 fs.ensureDirSync(config.paths.fonts);
+fs.ensureDirSync(config.paths.assets);
+await assetCatalog.init();
 
 const app = express();
 const server = http.createServer(app);
@@ -27,6 +30,7 @@ import path from 'path';
 
 // Serve output videos statically
 app.use('/output', express.static(config.paths.output));
+app.use('/assets', express.static(config.paths.assets));
 
 // Serve frontend statically in production (for Electron)
 const frontendPath = process.env.FRONTEND_PATH || path.resolve(config.paths.root, 'frontend/dist');
@@ -68,5 +72,7 @@ app.use('/api', apiRouter);
 
 // Start server
 server.listen(config.port, () => {
-  console.log(`🚀 Avatar Pipeline Backend running on http://localhost:${config.port}`);
+  const address = server.address();
+  const activePort = typeof address === 'object' && address ? address.port : config.port;
+  console.log(`Avatar Pipeline Backend running on http://localhost:${activePort}`);
 });

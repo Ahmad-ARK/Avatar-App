@@ -40,13 +40,22 @@ function getVal(key, envKey, defaultVal) {
 }
 
 const config = {
-  port: parseInt(getVal('port', 'PORT', '3001')),
+  // The Electron host sets PORT=0 to request a free OS-assigned port. Runtime process
+  // configuration must win over an old persisted `port` value from earlier releases.
+  port: parseInt(process.env.PORT !== undefined && process.env.PORT !== '' ? process.env.PORT : getVal('port', 'PORT', '3001')),
   frontendUrl: getVal('frontendUrl', 'FRONTEND_URL', 'http://localhost:5173'),
 
   groq: {
     get apiKey() { return getVal('groqApiKey', 'GROQ_API_KEY'); },
     model: 'whisper-large-v3',
     endpoint: 'https://api.groq.com/openai/v1/audio/transcriptions',
+  },
+
+  serper: {
+    get apiKey() { return getVal('serperApiKey', 'SERPER_API_KEY'); },
+    get enabled() { const v = getVal('serperEnabled', 'SERPER_ENABLED', 'false'); return v === true || v === 'true'; },
+    get freeCreditsRemaining() { return Math.max(0, Math.min(2500, parseInt(getVal('serperFreeCreditsRemaining', 'SERPER_FREE_CREDITS_REMAINING', '2500'), 10) || 0)); },
+    endpoint: 'https://google.serper.dev',
   },
 
   deepseek: {
@@ -59,6 +68,8 @@ const config = {
     get endpoint() { return getVal('modalEndpoint', 'MODAL_ENDPOINT', 'https://ahmadkhalid236997--flux-api-model-web.modal.run'); },
     get tokenId() { return getVal('modalTokenId', 'MODAL_TOKEN_ID'); },
     get tokenSecret() { return getVal('modalTokenSecret', 'MODAL_TOKEN_SECRET'); },
+    get imageEndpoint() { return getVal('modalImageEndpoint', 'MODAL_IMAGE_ENDPOINT', this.endpoint); },
+    get visionEndpoint() { return getVal('modalVisionEndpoint', 'MODAL_VISION_ENDPOINT', ''); },
   },
 
   pexels: {
@@ -162,6 +173,16 @@ const config = {
     // userMusic is a writable folder recipients can drop their own tracks into.
     music: path.resolve(__dirname, '..', 'assets', 'music'),
     userMusic: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'music'),
+    assets: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'assets'),
+    bundledDefaults: path.resolve(__dirname, '..', '..', 'assets', 'defaults'),
+    assetCatalog: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'asset-catalog.json'),
+    usage: path.join(process.env.APP_ROOT || path.resolve(__dirname, '../..'), 'usage.json'),
+  },
+
+  tools: {
+    get ytDlpPath() { return getVal('ytDlpPath', 'YT_DLP_PATH', 'yt-dlp'); },
+    get pythonPath() { return getVal('pythonPath', 'PYTHON_PATH', 'python'); },
+    get localWhisperModel() { return getVal('localWhisperModel', 'LOCAL_WHISPER_MODEL', 'large-v3'); },
   },
 
   // Update in-memory settings and persist to disk
@@ -172,7 +193,7 @@ const config = {
 
   // Retrieve current active settings
   getSettings: () => {
-    return localSettings;
+    return { ...localSettings };
   }
 };
 

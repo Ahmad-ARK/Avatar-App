@@ -51,9 +51,9 @@ export async function verifyAsset(imagePath, expectedQuery) {
     });
 
     const content = data.choices[0].message.content;
-    return JSON.parse(content);
+    const result = JSON.parse(content);
+    return { status: result.match && result.confidence >= 40 ? 'verified' : 'rejected', match: !!result.match, confidence: Number(result.confidence) || 0, reason: result.reason || '' };
   } catch (error) {
-    // If vision not supported, return neutral result
-    return { match: true, confidence: 50, reason: 'Vision verification unavailable' };
+    return { status: 'unverified', match: null, confidence: 0, reason: `Vision verification unavailable: ${error.message}` };
   }
 }

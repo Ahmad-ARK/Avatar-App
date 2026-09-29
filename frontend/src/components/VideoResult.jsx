@@ -2,7 +2,7 @@ import React from 'react';
 import { Download, RotateCcw, Palette } from 'lucide-react';
 
 const VideoResult = ({ job, backendUrl, onReset }) => {
-  const { videoUrl, nicheConfig } = job.result;
+  const { videoUrl, nicheConfig, report } = job.result;
   const fullVideoUrl = `${backendUrl}${videoUrl}`;
 
   return (
@@ -26,6 +26,8 @@ const VideoResult = ({ job, backendUrl, onReset }) => {
           </button>
         </div>
       </div>
+
+      {report && <div className="settings-section"><h3 className="section-title">Render compliance</h3><div className="grid-2"><p>Avatar appearances: <strong>{report.renderedAvatar?.appearanceCount ?? 'automatic'}</strong></p><p>Avatar time: <strong>{report.renderedAvatar?.totalSeconds ?? 'automatic'}{report.renderedAvatar?.totalSeconds != null ? 's' : ''}</strong></p><p>Assets used: <strong>{report.assets?.length || 0}</strong></p><p>Serper queries: <strong>{report.usage?.serperQueries || 0}</strong></p></div>{report.warnings?.length>0&&<p className="setting-note">Warnings: {report.warnings.join('; ')}</p>}</div>}
 
       <div className="video-wrapper">
         <video 

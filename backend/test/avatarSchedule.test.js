@@ -1,0 +1,8 @@
+import test from 'node:test'; import assert from 'node:assert/strict';
+import { buildAvatarSchedule, applyAvatarSchedule } from '../src/planning/avatarSchedule.js';
+const avatar = { mode: 'exact', appearanceCount: 5, secondsPerAppearance: 5, minimumGapSeconds: 1, placement: 'even', manualStartSeconds: [], layout: 'full_avatar' };
+for (const fps of [24, 30, 60]) test(`five exact appearances at ${fps} fps`, () => { const s = buildAvatarSchedule({ durationSeconds: 120, fps, avatar }); assert.equal(s.intervals.length, 5); assert.ok(s.intervals.every(v => v.endFrame - v.startFrame === 5 * fps)); assert.equal(s.renderedSeconds, 25); });
+test('off mode has no appearances', () => assert.deepEqual(buildAvatarSchedule({ durationSeconds: 60, fps: 30, avatar: { ...avatar, mode: 'off' } }).intervals, []));
+test('one appearance is centered', () => { const s = buildAvatarSchedule({ durationSeconds: 20, fps: 30, avatar: { ...avatar, appearanceCount: 1 } }); assert.equal(s.intervals[0].startFrame, 225); });
+test('manual overlap fails', () => assert.throws(() => buildAvatarSchedule({ durationSeconds: 60, fps: 30, avatar: { ...avatar, appearanceCount: 2, placement: 'manual', manualStartSeconds: [1, 2] } }), /overlap|required/));
+test('schedule controls layouts independently of AI plan', () => { const s = buildAvatarSchedule({ durationSeconds: 20, fps: 30, avatar: { ...avatar, appearanceCount: 1 } }); const out = applyAvatarSchedule([{ start_time: 0, end_time: 20, layout: 'full_avatar', visual_query: null }], s, 30, 20); assert.equal(out.filter(v => v.layout === 'full_avatar').length, 1); assert.ok(out.filter(v => v.layout === 'visual_only').length >= 1); });

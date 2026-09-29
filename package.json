@@ -19,6 +19,7 @@
     "files": [
       "main.js",
       "backend/**/*",
+      "assets/defaults/**/*",
       "frontend/dist/**/*",
       "!**/.env",
       "!**/.env.*",

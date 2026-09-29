@@ -1,0 +1,9 @@
+import fs from 'fs-extra'; import path from 'path'; import config from '../config.js'; import { runFFmpeg } from '../utils/ffmpegHelpers.js'; import { apiJson } from './apiClient.js';
+export async function analyzeAsset(record, workDir) {
+  if (!config.modal.visionEndpoint) return { state:'limited', description:'', tags:record.machineTags||[], evidence:'Metadata and filename only; Modal vision is not configured.' };
+  const frames=[]; await fs.ensureDir(workDir);
+  if(record.kind==='image') frames.push(record.managedPath); else { const duration=Math.max(1,record.duration||1); for(const [i,t] of [0.15,0.5,0.85].entries()){const out=path.join(workDir,`${record.id}-${i}.jpg`); await runFFmpeg(['-ss',String(duration*t),'-i',record.managedPath,'-frames:v','1','-vf','scale=640:-2','-y',out],`asset analysis ${record.id}`); frames.push(out);} }
+  const dataUrls=await Promise.all(frames.map(async file=>`data:image/jpeg;base64,${(await fs.readFile(file)).toString('base64')}`));
+  const headers={'Content-Type':'application/json'}; if(config.modal.tokenId&&config.modal.tokenSecret){headers['Modal-Key']=config.modal.tokenId;headers['Modal-Secret']=config.modal.tokenSecret;}
+  try { const result=await apiJson(config.modal.visionEndpoint,{method:'POST',headers,body:JSON.stringify({frames:dataUrls,prompt:'Describe subjects, actions, setting, visible text, and useful video topics. Do not identify a real person from appearance alone.'}),timeout:180000}); const description=String(result.description||''); return {state:'ready',description,tags:[...new Set(description.toLowerCase().split(/\W+/).filter(v=>v.length>3))].slice(0,50),evidence:`Analyzed by ${result.model||'configured vision model'}`}; } catch(error){return {state:'limited',description:'',tags:record.machineTags||[],evidence:`Vision unavailable: ${error.message}`};}
+}

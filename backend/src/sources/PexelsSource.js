@@ -5,9 +5,11 @@ import config from '../config.js';
 export class PexelsSource extends BaseAssetSource {
   constructor() {
     super('pexels');
+    this.capabilities = new Set(['image', 'video']);
   }
 
   async search(query, type = 'image', count = 5) {
+    if (!config.pexels.apiKey) return [];
     const headers = { Authorization: config.pexels.apiKey };
 
     if (type === 'video') {

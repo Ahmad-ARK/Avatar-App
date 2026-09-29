@@ -20,6 +20,13 @@ temp/
 tmp/
 output/
 uploads/
+assets/
+!assets/
+assets/*
+!assets/defaults/
+!assets/defaults/**
+asset-catalog.json
+usage.json
 
 # ---- Logs & debug ----
 *.log

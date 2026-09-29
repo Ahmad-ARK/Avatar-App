@@ -11,10 +11,11 @@ import config from '../config.js';
  * @param {string} audioPath - absolute path to audio file (mp3/wav/m4a, max 25MB)
  * @returns {Promise<{text: string, words: Array<{word: string, start: number, end: number}>, segments: Array}>}
  */
-export async function transcribe(audioPath) {
+export async function transcribe(audioPath, options = {}) {
   const form = new FormData();
   form.append('file', fs.createReadStream(audioPath));
-  form.append('model', config.groq.model);
+  if (!config.groq.apiKey) throw new Error('Groq API key is not configured');
+  form.append('model', options.model === 'turbo' ? 'whisper-large-v3-turbo' : config.groq.model);
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'word');
   form.append('timestamp_granularities[]', 'segment');
@@ -52,5 +53,6 @@ export async function transcribe(audioPath) {
       end: w.end,
     })),
     segments: data.segments || [],
+    provider: 'groq',
   };
 }
